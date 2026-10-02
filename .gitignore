@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local state written next to the scripts when you run them
+auto_settings.json
+fetch_archive.json
+compile_settings.json
+compile_ledger.json
+compile_cache.json
+*.json.broken
+*.json.tmp
+
+# Downloads and output
+fetched/
+compilations/
+stingers/
