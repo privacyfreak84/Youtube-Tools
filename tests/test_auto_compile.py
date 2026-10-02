@@ -45,8 +45,8 @@ def template_clip():
 
 
 def make_rows(n, newest=datetime(2026, 9, 30, 12, tzinfo=timezone.utc), title="Clip {i}", duration=20):
-    """n fake channel entries, newest first, one per day going back. ids are vid0000, vid0001, ..."""
-    return [{"id": f"vid{i:04d}", "title": title.format(i=i), "views": 1000 + i, "duration": duration,
+    """n fake channel entries, newest first, one per day going back. ids are vid00000000, vid00000001, ... (11 chars like real ones)"""
+    return [{"id": f"vid{i:08d}", "title": title.format(i=i), "views": 1000 + i, "duration": duration,
              "sort_ts": (newest - timedelta(days=i)).timestamp(), "approx": False,
              "upload_date": (newest - timedelta(days=i)).strftime("%Y-%m-%d")} for i in range(n)]
 
@@ -150,12 +150,12 @@ class BaselineTests(WorldTest):
         self.assertIn("take the first 5 of the 40 in that list", out)
 
     def test_failed_download_is_replaced_by_next_in_line_and_order_is_kept(self):
-        self.fail_ids = {"vid0039"}                       # the oldest one fails (sort is oldest-first)
+        self.fail_ids = {"vid00000039"}                       # the oldest one fails (sort is oldest-first)
         out = self.run_ac(*self.base("--pick", "new:8"))
         self.assertEqual(len(self.clips_on_disk()), 8, out)
-        self.assertNotIn("vid0039", self.state("fetch_archive.json"))
+        self.assertNotIn("vid00000039", self.state("fetch_archive.json"))
         ids = [n.rsplit("_", 1)[-1][:-4] for n in self.clips_on_disk()]
-        self.assertEqual(ids, [f"vid{i:04d}" for i in range(38, 30, -1)])   # oldest-first order survived
+        self.assertEqual(ids, [f"vid{i:08d}" for i in range(38, 30, -1)])   # oldest-first order survived
 
     def test_delete_after_removes_used_clips_but_keeps_unused_ones(self):
         out = self.run_ac(*self.base("--pick", "6", "--delete-after"))   # 4 get compiled, 2 are left over
@@ -167,6 +167,51 @@ class BaselineTests(WorldTest):
         self.assertEqual(p("60"), ("first", 60))
         self.assertEqual(p("new:7"), ("new", 7))
         self.assertEqual(p("last:3"), ("last", 3))
+
+
+class DetectionTests(WorldTest):
+    def test_clips_already_on_disk_are_adopted_not_redownloaded(self):
+        self.dest.mkdir()
+        other = self.tmp / "other"
+        other.mkdir()
+        shutil.copy(template_clip(), self.dest / "20260101-0000_0001_vid00000039.mp4")     # our own naming
+        shutil.copy(template_clip(), self.dest / "Some Title [vid00000038].mp4")          # yt-dlp's naming
+        shutil.copy(template_clip(), other / "mine_vid00000037.mp4")                      # a different folder
+        out = self.run_ac(*self.base("--pick", "new:5", "--no-compile", "--check-folder", str(other)))
+        self.assertIn("3 videos already on your disk", out)
+        self.assertIn("1 in other folders", out)
+        self.assertEqual(sorted(self.downloads), [f"vid{i:08d}" for i in range(32, 37)])  # 36..32 fetched
+        archive = self.state("fetch_archive.json")
+        self.assertTrue(archive["vid00000038"]["adopted"])
+        self.assertEqual(self.state("auto_settings.json")["check_folders"], [str(other.resolve())])
+
+    def test_adopting_is_skipped_by_redownload(self):
+        self.dest.mkdir()
+        shutil.copy(template_clip(), self.dest / "x_vid00000039.mp4")
+        self.run_ac(*self.base("--pick", "2", "--no-compile", "--redownload"))
+        self.assertIn("vid00000039", self.downloads)
+
+    def test_reuploads_with_same_title_and_length_are_skipped(self):
+        self.rows[39]["title"] = self.rows[38]["title"] = self.rows[37]["title"] = "Same Clip!"   # three look-alikes
+        out = self.run_ac(*self.base("--pick", "new:4", "--no-compile"))
+        self.assertIn("2 videos look like re-uploads", out)
+        self.assertEqual(sorted(self.downloads),                       # first of the three kept, then 36, 35, 34
+                         ["vid00000034", "vid00000035", "vid00000036", "vid00000039"])
+
+    def test_lookalike_of_an_archived_clip_is_skipped_and_keep_duplicates_overrides(self):
+        (self.tmp / "fetch_archive.json").write_text(json.dumps(
+            {"someOtherId1": {"file": "gone.mp4", "title": "clip 39", "duration": 20}}))        # re-upload of row 39
+        out = self.run_ac(*self.base("--pick", "new:2", "--no-compile"))
+        self.assertNotIn("vid00000039", self.downloads, out)
+        self.downloads.clear()
+        self.run_ac(*self.base("--pick", "new:2", "--no-compile", "--keep-duplicates"))
+        self.assertIn("vid00000039", self.downloads)
+
+    def test_titles_without_a_length_are_never_called_duplicates(self):
+        for r in self.rows:
+            r["title"], r["duration"] = "Same", None
+        self.run_ac(*self.base("--pick", "new:3", "--no-compile"))
+        self.assertEqual(len(self.downloads), 3)
 
 
 if __name__ == "__main__":

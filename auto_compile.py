@@ -79,7 +79,7 @@ DEFAULTS = {
     "channel": "", "type": "videos", "sort": "popular", "pick": "new:30",
     "date_from": "", "date_to": "", "dest": str(HERE / "fetched"),
     "max_height": 1080, "min_minutes": 0, "max_minutes": 0, "min_views": 0,
-    "play": "asis", "delete_after": False,
+    "play": "asis", "delete_after": False, "check_folders": [],
 }
 SORTS = [("popular", "Most viewed first"), ("unpopular", "Least viewed first"),
          ("oldest", "Oldest first"), ("latest", "Newest first"),
@@ -433,6 +433,75 @@ def delete_used_clips(dest, archive):
     return removed
 
 
+# --------------------------------------------------------------------------- what do we already have?
+
+def find_on_disk(folders, wanted_ids):
+    """Video files in these folders whose name contains one of the wanted video ids -> {id: path}.
+    Works for our own names (stamp_0001_ID.mp4) and yt-dlp's usual 'Title [ID].mp4'. An id is 11 characters,
+    so a stray match inside some other name is practically impossible."""
+    found = {}
+    for folder in folders:
+        if not Path(folder).is_dir():
+            continue
+        for _, path in mc.scan_clips(folder):
+            name = path.name
+            if re.search(r"\.f\d+\.", name):                    # per-stream leftovers of an unfinished download
+                continue
+            for i in range(len(name) - 10):
+                vid = name[i:i + 11]
+                if vid in wanted_ids and vid not in found:
+                    found[vid] = path
+    return found
+
+
+def adopt_found(found, rows_by_id, archive, dest, channel):
+    """Add clips that were on disk but not in the download list to it. Returns how many were added."""
+    added = 0
+    for vid, path in found.items():
+        if vid in archive:
+            continue
+        r = rows_by_id[vid]
+        try:
+            where = path.relative_to(dest).as_posix()
+        except ValueError:
+            where = str(path)
+        archive[vid] = {"file": where, "title": r["title"], "views": r["views"], "duration": r.get("duration"),
+                        "channel": channel, "run": "adopted", "adopted": True}
+        added += 1
+    return added
+
+
+def dup_key(title, duration):
+    """Same title (ignoring case and punctuation) and same length to the second = probably the same clip."""
+    t = re.sub(r"[\W_]+", " ", (title or "").casefold()).strip()
+    if not t or duration is None:
+        return None
+    return (t, int(round(duration)))
+
+
+def find_likely_duplicates(ranked, known, archive):
+    """Ids in `ranked` that look like re-uploads: same title and length as a clip we already have (known,
+    or in the archive) or as one that ranks higher in this list. A guess, so it is always shown to the user."""
+    seen = {k for k in (dup_key(e.get("title"), e.get("duration")) for e in archive.values()) if k}
+    for r in ranked:
+        if r["id"] in known:
+            k = dup_key(r["title"], r.get("duration"))
+            if k:
+                seen.add(k)
+    dups = set()
+    for r in ranked:
+        if r["id"] in known:
+            continue
+        k = dup_key(r["title"], r.get("duration"))
+        if not k:
+            continue
+        if k in seen:
+            dups.add(r["id"])
+        else:
+            seen.add(k)
+    return dups
+
+
 # --------------------------------------------------------------------------- questions
 
 def pick_defaults(spec):
@@ -511,6 +580,10 @@ def main():
     ap.add_argument("--reverse", action="store_true", help="compile with the last picked video first")
     ap.add_argument("--reverse-each", action="store_true", help="play each compilation backwards")
     ap.add_argument("--redownload", action="store_true", help="ignore the already-downloaded list")
+    ap.add_argument("--keep-duplicates", action="store_true",
+                    help="also download videos that look like re-uploads (same title and length) of ones you have")
+    ap.add_argument("--check-folder", action="append", metavar="FOLDER",
+                    help="also look in this folder for videos you already have (remembered; can be repeated)")
     ap.add_argument("--delete-after", action="store_true")
     ap.add_argument("--no-compile", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
@@ -539,7 +612,7 @@ def main():
     if args.channel:
         # One-line mode: only what you type counts, so an old date range can never sneak in.
         # (Only the download folder and quality cap are remembered between runs.)
-        s = {**DEFAULTS, **{k: saved[k] for k in ("dest", "max_height") if k in saved}}
+        s = {**DEFAULTS, **{k: saved[k] for k in ("dest", "max_height", "check_folders") if k in saved}}
         s["channel"] = args.channel
         for key in ("type", "sort", "date_from", "date_to") + limit_flags:
             if getattr(args, key, None) is not None:
@@ -562,6 +635,11 @@ def main():
         interview(s)
     if s["sort"] not in SORT_WORDS:
         s["sort"] = "popular"
+    for f in args.check_folder or []:
+        if not Path(mc.clean_path(f)).is_dir():
+            sys.exit(f"Error: --check-folder not found: {f}")
+    s["check_folders"] = sorted(set(s.get("check_folders") or [])
+                                | {str(Path(mc.clean_path(f)).resolve()) for f in args.check_folder or []})
 
     try:
         d_from = parse_date(s["date_from"]) if s["date_from"] else None
@@ -624,17 +702,48 @@ def main():
 
     # ---- 2. order, 3. pick positions
     ranked = rank_rows(rows_in, s["sort"])
-    picked = apply_pick(ranked, s["pick"], downloaded)
+
+    # ---- what do we already have? Clips on disk count even if they are missing from the download list
+    # (downloaded by hand, history file lost, ...). Look-alikes of clips we have are skipped too.
+    if not args.redownload:
+        folders = [dest] + [Path(f) for f in s["check_folders"]]
+        cfg_dir = mc.load_json(COMPILE_SETTINGS, {}).get("clips_dir")
+        if cfg_dir:
+            folders.append(Path(cfg_dir))
+        folders = list(dict.fromkeys(f.resolve() for f in folders if f.is_dir()))
+        on_disk = find_on_disk(folders, {r["id"] for r in rows})
+        fresh = [v for v in on_disk if v not in archive]
+        if fresh:
+            elsewhere = sum(1 for v in fresh if dest.resolve() not in on_disk[v].parents)
+            print(f"  {mc.plural(len(fresh), 'video')} already on your disk but missing from the download list"
+                  " - counting them as downloaded"
+                  + (f" ({elsewhere} in other folders, so they won't go into the compilations)." if elsewhere else "."))
+            adopt_found(on_disk, {r["id"]: r for r in rows}, archive, dest.resolve(), s["channel"])
+            if not args.dry_run:
+                mc.save_json(ARCHIVE_FILE, archive)
+    dup_ids = set() if args.keep_duplicates else find_likely_duplicates(ranked, set(downloaded), downloaded)
+    skip = set(downloaded) | dup_ids
+    if dup_ids:
+        print(f"  {mc.plural(len(dup_ids), 'video')} look like re-uploads (same title and length as a clip you "
+              "already have, or as a higher-ranked one) - skipping them. Use --keep-duplicates to include them.")
+        if args.dry_run:
+            for r in [r for r in ranked if r["id"] in dup_ids][:5]:
+                print(f"      look-alike: {r['title']}")
+
+    picked = apply_pick(ranked, s["pick"], skip)
     what = describe_pick(s["pick"])
     if not picked:
         if parse_pick(s["pick"])[0] == "new":
-            sys.exit("Nothing new: every video in that list has already been downloaded." + range_note)
+            sys.exit("Nothing new: every video in that list has already been downloaded"
+                     + (" or looks like a re-upload" if dup_ids else "") + "." + range_note)
         sys.exit(f"Your pick ({what}) doesn't match anything - the list only has {len(ranked)} videos."
                  + range_note)
-    new_picked = [(p, r) for p, r in picked if r["id"] not in downloaded]
-    already = len(picked) - len(new_picked)
+    new_picked = [(p, r) for p, r in picked if r["id"] not in skip]
+    already = sum(1 for _, r in picked if r["id"] in downloaded)
+    lookalikes = len(picked) - len(new_picked) - already
     if not new_picked:
-        sys.exit(f"All {len(picked)} videos in that selection ({what}) were downloaded in an earlier run.\n"
+        sys.exit(f"All {len(picked)} videos in that selection ({what}) were downloaded in an earlier run"
+                 + (" or look like re-uploads" if lookalikes else "") + ".\n"
                  "To get the next batch, pick different positions (e.g. 61-120) or use new:N." + range_note)
 
     known = [r["duration"] for _, r in new_picked if r.get("duration")]
@@ -642,6 +751,7 @@ def main():
     print(f"\nPlan: order by {SORT_WORDS[s['sort']]}, take {what} of the {len(ranked)} in that list")
     print(f"      = {mc.plural(len(picked), 'video')}"
           + (f", {already} already downloaded earlier (skipped)" if already else "")
+          + (f", {lookalikes} look like re-uploads (skipped)" if lookalikes else "")
           + f" -> downloading {len(new_picked)}{length}.")
     if s["play"] != "asis":
         print("      Compilations will be built " + ("in reverse order." if s["play"] == "reverse"
@@ -667,7 +777,7 @@ def main():
     queue = list(new_picked)
     if parse_pick(s["pick"])[0] == "new":
         used_ids = {r["id"] for _, r in new_picked}
-        queue += [(i + 1, r) for i, r in enumerate(ranked) if r["id"] not in downloaded and r["id"] not in used_ids]
+        queue += [(i + 1, r) for i, r in enumerate(ranked) if r["id"] not in skip and r["id"] not in used_ids]
     target = len(new_picked)
 
     # ---- download
