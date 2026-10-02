@@ -403,5 +403,15 @@ class AgainAndSummaryTests(WorldTest):
         self.assertIn("python auto_compile.py --again --yes", tail)
 
 
+class FirstRunTests(WorldTest):
+    def test_compilation_setup_is_asked_before_the_plan_and_points_at_the_download_folder(self):
+        (self.tmp / "compile_settings.json").unlink()
+        out = self.run_ac(*self.base("--compilations", "1", "--leftover", "keep"))   # every setup question: Enter
+        self.assertLess(out.index("First time: a short one-time setup"), out.index("Plan: make 1 compilation of 15"))
+        self.assertEqual(self.state("compile_settings.json")["clips_dir"], str(self.dest.resolve()))
+        self.assertEqual(len(self.downloads), 15, out)
+        self.assertEqual(len(self.made()), 1, out)
+
+
 if __name__ == "__main__":
     unittest.main()
