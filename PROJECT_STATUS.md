@@ -20,3 +20,6 @@ So far, these scripts have been preliminarily created. They are pending further 
 - Changed: the compilation setup now runs before the plan (it must know the compilation size) and sets `clips_dir` to the download folder. `--delete-after` also clears used leftovers from earlier runs, but only clips this script downloaded itself. The default pick for a first run is now `comps:3`.
 - Added `tests/test_auto_compile.py` (34+ offline tests with a faked YouTube and real ffmpeg) and `.gitignore` for local state, downloads and compilations.
 - NOT tested against real YouTube from here (no access): parallel downloads against real rate limits and Ctrl-C during real yt-dlp downloads. If downloads misbehave, try `--workers 1` first.
+
+## 2026-10-03 (later)
+- Fixed a dead end in `auto_compile.py`: when every video in the selection was already downloaded ("Nothing new") but clips were still waiting unused in the download folder (e.g. 12 clips when 15 are needed), it exited without touching them. It now carries on with the waiting clips: compiles whatever can be made and offers the leftover choices (keep / shorter compilation / download more). With nothing waiting it still stops with the old message.
