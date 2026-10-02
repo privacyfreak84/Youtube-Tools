@@ -126,8 +126,9 @@ def parse_date(text):
 
 
 def ask_date(prompt, default=""):
+    hint = "Enter = keep it, - = no limit" if default else "Enter = no limit"
     while True:
-        ans = mc.ask_text(f"{prompt} (Enter = no limit)", default)
+        ans = mc.ask_text(f"{prompt} ({hint})", default)
         if not ans or ans.lower() in ("none", "no", "-"):
             return ""
         try:
@@ -474,7 +475,10 @@ def main():
         s["delete_after"] = args.delete_after
     else:
         s = {**DEFAULTS, **saved}
-        for key in limit_flags:
+        # A date range is a one-off, so it is never carried over from the last run
+        # (a stale default silently shrank the list). --from/--to can still prefill it.
+        s["date_from"], s["date_to"] = "", ""
+        for key in limit_flags + ("date_from", "date_to"):
             if getattr(args, key, None) is not None:
                 s[key] = getattr(args, key)
         if flag_pick:
