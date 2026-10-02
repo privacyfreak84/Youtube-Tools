@@ -149,6 +149,19 @@ class BaselineTests(WorldTest):
         out = self.run_ac("--dry-run", inputs=[])
         self.assertIn("take the first 5 of the 40 in that list", out)
 
+    def test_failed_download_is_replaced_by_next_in_line_and_order_is_kept(self):
+        self.fail_ids = {"vid0039"}                       # the oldest one fails (sort is oldest-first)
+        out = self.run_ac(*self.base("--pick", "new:8"))
+        self.assertEqual(len(self.clips_on_disk()), 8, out)
+        self.assertNotIn("vid0039", self.state("fetch_archive.json"))
+        ids = [n.rsplit("_", 1)[-1][:-4] for n in self.clips_on_disk()]
+        self.assertEqual(ids, [f"vid{i:04d}" for i in range(38, 30, -1)])   # oldest-first order survived
+
+    def test_delete_after_removes_used_clips_but_keeps_unused_ones(self):
+        out = self.run_ac(*self.base("--pick", "6", "--delete-after"))   # 4 get compiled, 2 are left over
+        self.assertEqual(len(self.made()), 1, out)
+        self.assertEqual(len(self.clips_on_disk()), 2, out)
+
     def test_pick_parsing(self):
         p = self.ac.parse_pick
         self.assertEqual(p("60"), ("first", 60))

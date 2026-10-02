@@ -328,9 +328,19 @@ def describe_pick(spec):
 
 # --------------------------------------------------------------------------- downloading
 
-def download_one(url, outtmpl, max_height, cookies_opts):
+def is_tty():
+    return sys.stdin.isatty()
+
+
+class StopDownload(Exception):
+    """Raised inside a running download when the user pressed Ctrl-C, so it ends quickly."""
+
+
+def download_one(url, outtmpl, max_height, cookies_opts, stop=None, show_progress=True):
     def hook(d):
-        if d.get("status") == "downloading":
+        if stop is not None and stop.is_set():
+            raise StopDownload()
+        if show_progress and d.get("status") == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             if total:
                 print(f"\r   downloading... {d.get('downloaded_bytes', 0) * 100 // total}%   ", end="", flush=True)
@@ -343,7 +353,8 @@ def download_one(url, outtmpl, max_height, cookies_opts):
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
-    print("\r" + " " * 40 + "\r", end="")
+    if show_progress:
+        print("\r" + " " * 40 + "\r", end="")
 
 
 def find_downloaded(dest, stem):
@@ -357,6 +368,69 @@ def clean_partials(dest, prefix):
     for p in dest.glob(prefix + "*"):
         if p.suffix.lower() in (".part", ".ytdl", ".temp") or re.search(r"\.f\d+\.", p.name):
             p.unlink(missing_ok=True)
+
+
+def download_batch(queue, target, dest, stamp, first_index, max_height, cookies_opts, archive, channel):
+    """Download from queue ([(position, row), ...] in the chosen order) until `target` clips have arrived.
+    A clip that fails is skipped and the next one in the queue takes its place. File names carry the
+    order (stamp_NNNN_id), and every success goes into the archive straight away.
+    Returns (files, failed_positions, next_index)."""
+    files, failed, index = [], [], first_index
+    for pos, r in queue:
+        if len(files) >= target:
+            break
+        stem = f"{stamp}_{index:04d}_{r['id']}"
+        index += 1
+        print(f"[{len(files) + 1}/{target}] #{pos} {r['title']}")
+        try:
+            download_one(f"https://www.youtube.com/watch?v={r['id']}", str(dest / (stem + ".%(ext)s")),
+                         max_height, cookies_opts)
+            got = find_downloaded(dest, stem)
+            if got is None:
+                raise RuntimeError("finished but no file was found")
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            failed.append(pos)
+            print(f"   skipped ({str(e).splitlines()[0][:150] if str(e) else 'download failed'})")
+            clean_partials(dest, stem)
+            continue
+        files.append(got)
+        archive[r["id"]] = {"file": got.name, "title": r["title"], "views": r["views"],
+                            "duration": r.get("duration"), "channel": channel, "run": stamp}
+        mc.save_json(ARCHIVE_FILE, archive)
+    return files, failed, index
+
+
+def compile_now(dest, play, count="all", include_leftover=False):
+    """Run make_compilations.py on the download folder. Returns (exit code, names of the compilations made)."""
+    before = set(mc.load_json(COMPILE_LEDGER, {}).get("compilations", {}))
+    cmd = [sys.executable, str(MAKE), str(count), "--clips", str(dest), "--order", "name"]
+    if play == "reverse":
+        cmd.append("--reverse")
+    elif play == "each":
+        cmd.append("--reverse-each")
+    if include_leftover:
+        cmd.append("--include-leftover")
+    rc = subprocess.run(cmd).returncode
+    after = mc.load_json(COMPILE_LEDGER, {}).get("compilations", {})
+    return rc, [n for n in after if n not in before]
+
+
+def delete_used_clips(dest, archive):
+    """Delete clips that are now inside a compilation. Only files this script downloaded (never ones that
+    were adopted from elsewhere). Includes leftovers from earlier runs that have just been used."""
+    used = set()
+    for e in mc.load_json(COMPILE_LEDGER, {}).get("compilations", {}).values():
+        used.update(e["clips"])
+    ours = {v["file"] for v in archive.values() if v.get("file") and not v.get("adopted")}
+    removed = 0
+    for key in used:
+        f = dest / key
+        if key in ours and f.is_file():
+            f.unlink()
+            removed += 1
+    return removed
 
 
 # --------------------------------------------------------------------------- questions
@@ -580,7 +654,7 @@ def main():
         print("\n(dry run - nothing was downloaded)")
         return
 
-    if sys.stdin.isatty() and not args.yes:
+    if is_tty() and not args.yes:
         if mc.ask_text("Start? (y/n)", "y").lower().startswith("n"):
             return
 
@@ -599,30 +673,10 @@ def main():
     # ---- download
     dest.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
-    files, failed, started = [], [], time.time()
+    started = time.time()
     try:
-        for pos, r in queue:
-            if len(files) >= target:
-                break
-            stem = f"{stamp}_{len(files) + 1:04d}_{r['id']}"      # file names keep the chosen order
-            print(f"[{len(files) + 1}/{target}] #{pos} {r['title']}")
-            try:
-                download_one(f"https://www.youtube.com/watch?v={r['id']}", str(dest / (stem + ".%(ext)s")),
-                             s["max_height"], cookies_opts)
-                got = find_downloaded(dest, stem)
-                if got is None:
-                    raise RuntimeError("finished but no file was found")
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                failed.append(pos)
-                print(f"   skipped ({str(e).splitlines()[0][:150] if str(e) else 'download failed'})")
-                clean_partials(dest, stem)
-                continue
-            files.append(got)
-            archive[r["id"]] = {"file": got.name, "title": r["title"], "views": r["views"],
-                                "channel": s["channel"], "run": stamp}
-            mc.save_json(ARCHIVE_FILE, archive)
+        files, failed, _ = download_batch(queue, target, dest, stamp, 1, s["max_height"], cookies_opts,
+                                          archive, s["channel"])
     except KeyboardInterrupt:
         clean_partials(dest, stamp)
         print("\n\nStopped. Clips downloaded so far are kept. To turn them into compilations later, run:")
@@ -639,26 +693,12 @@ def main():
     if not files:
         return                          # nothing new arrived (compilations only start from new downloads)
 
-    # ---- compile exactly these clips, in the order they were chosen
+    # ---- compile: everything unused in the folder (new clips plus any leftovers), in name order
     print("\nMaking compilations...")
-    cmd = [sys.executable, str(MAKE), "all", "--clips", str(dest), "--order", "name"]
-    if s["play"] == "reverse":
-        cmd.append("--reverse")
-    elif s["play"] == "each":
-        cmd.append("--reverse-each")
-    if args.include_leftover:
-        cmd.append("--include-leftover")
-    rc = subprocess.run(cmd).returncode
+    rc, made = compile_now(dest, s["play"], "all", args.include_leftover)
 
     if s["delete_after"] and rc == 0:
-        used = set()
-        for e in mc.load_json(COMPILE_LEDGER, {}).get("compilations", {}).values():
-            used.update(e["clips"])
-        removed = 0
-        for f in files:
-            if f.exists() and f.relative_to(dest).as_posix() in used:
-                f.unlink()
-                removed += 1
+        removed = delete_used_clips(dest, archive)
         if removed:
             print(f"Deleted {mc.plural(removed, 'downloaded clip')} that are now inside compilations.")
 
