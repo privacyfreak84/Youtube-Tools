@@ -45,6 +45,8 @@ python auto_compile.py @Channel --from 2024-01-01 --to 2024-06-30 --sort popular
 
 Run `python auto_compile.py --help` or read the header of the script for the full list of `--sort` and `--pick` options.
 
+In interactive mode your answers are remembered as the defaults for next time, **except the date range**, which always starts blank so an old range can't quietly shrink the list. Pass `--from` / `--to` to prefill it; at the prompt, Enter keeps what is shown and `-` means no limit.
+
 ### Compiling clips you already have
 
 ```bash
