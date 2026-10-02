@@ -58,6 +58,7 @@ python auto_compile.py --again --yes --compilations 10           # ...or a bigge
 - **Leftovers are handled for you.** If clips are left that can't fill a whole compilation, it asks: keep them for next time, make a shorter compilation now, or download just enough more to fill one. For unattended runs use `--leftover keep|short|topup` (default with `--yes` is keep). The "download more" option only appears when the list can actually supply them.
 - **Faster downloads.** `--workers N` downloads N videos at once (default 3). Use `--workers 1` if YouTube starts refusing.
 - **`--again`** repeats your last run with the next batch. Unlike a fresh run, it keeps the last run's date range.
+- **Your compilation look is always visible.** The compilation questions (clips per compilation, transitions, intro/outro, quality) are asked once and remembered. Every plan prints them, e.g. `Compilations: 15 clips each, mixed transitions, balanced quality`, the interactive run ends its questions with "8. Change how they look?", and `--setup` goes through them again.
 - **A summary at the end** lists the compilations made, how many clips are waiting, and the command for the next batch.
 - `--delete-after` now also removes older leftover clips once they have been used (only files this script downloaded).
 

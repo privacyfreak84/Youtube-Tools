@@ -23,3 +23,6 @@ So far, these scripts have been preliminarily created. They are pending further 
 
 ## 2026-10-03 (later)
 - Fixed a dead end in `auto_compile.py`: when every video in the selection was already downloaded ("Nothing new") but clips were still waiting unused in the download folder (e.g. 12 clips when 15 are needed), it exited without touching them. It now carries on with the waiting clips: compiles whatever can be made and offers the leftover choices (keep / shorter compilation / download more). With nothing waiting it still stops with the old message.
+
+## 2026-10-03 (later still)
+- `auto_compile.py` now shows the saved compilation setup (clips per compilation, transitions, quality, intro/outro) in every plan, asks "8. Change how they look?" at the end of the interactive questions, and has `--setup` to redo those questions. Before, they were asked once on the very first run and never mentioned again, so it looked as if they had vanished.
