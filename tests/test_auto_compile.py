@@ -370,5 +370,38 @@ class ParallelTests(WorldTest):
         self.assertEqual(self.made(), [])                   # no compilation after an interrupt
 
 
+class AgainAndSummaryTests(WorldTest):
+    def test_again_repeats_the_last_run_with_the_next_batch_and_keeps_its_date_range(self):
+        first = self.run_ac(*self.base("--compilations", "1", "--from", "2026-09-01"))
+        batch1 = list(self.downloads)
+        self.assertEqual(len(batch1), 4, first)
+        self.downloads.clear()
+        out = self.run_ac("--again", "--yes")
+        self.assertIn("Repeating your last run: @Chan (shorts), order by oldest, "
+                      "enough new videos for 1 compilation, uploaded 2026-09-01 to today.", out)
+        self.assertEqual(len(self.downloads), 4, out)
+        self.assertFalse(set(batch1) & set(self.downloads))              # a fresh batch, not the same videos
+        self.assertEqual(len(self.made()), 2, out)
+        self.assertEqual(self.state("auto_settings.json")["date_from"], "2026-09-01")
+
+    def test_again_overrides_with_flags(self):
+        self.run_ac(*self.base("--compilations", "1"))
+        self.downloads.clear()
+        self.run_ac("--again", "--yes", "--compilations", "2")
+        self.assertEqual(len(self.downloads), 8)
+
+    def test_again_needs_a_previous_run_and_no_channel(self):
+        self.assertIn("nothing to repeat yet", self.run_ac("--again", "--yes"))
+        self.assertIn("leave the channel out", self.run_ac("--again", "@Chan"))
+
+    def test_summary_lists_what_was_made_what_waits_and_how_to_go_again(self):
+        out = self.run_ac(*self.base("--pick", "6"))
+        tail = out[out.rindex("=" * 50):]
+        self.assertIn("All done: 1 compilation made.", tail)
+        self.assertIn("compilation_001.mp4", tail)
+        self.assertIn("2 clips waiting in fetched/ for the next batch.", tail)
+        self.assertIn("python auto_compile.py --again --yes", tail)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -656,6 +656,27 @@ def leftover_step(job, args, capped):
     return made
 
 
+def print_summary(dest, cfg, made):
+    """The last thing on screen: what was made, where, and what is left."""
+    left = len(waiting_clips(dest, cfg))
+    ledger = mc.load_json(COMPILE_LEDGER, {}).get("compilations", {})
+    print("\n" + "=" * 50)
+    if made:
+        print(f"All done: {mc.plural(len(made), 'compilation')} made.")
+        for name in made[:8]:
+            f = Path(ledger.get(name, {}).get("file", ""))
+            size = f"  ({f.stat().st_size / 1e6:.0f} MB)" if f.is_file() else ""
+            print(f"   {f.name or name}{size}")
+        if len(made) > 8:
+            print(f"   ... and {len(made) - 8} more")
+        print(f"   in {cfg['output_dir']}")
+    else:
+        print("No compilation was made this time.")
+    if left:
+        print(f"{mc.plural(left, 'clip')} waiting in {dest.name}/ for the next batch.")
+    print("Next batch, no questions:   python auto_compile.py --again --yes")
+
+
 # --------------------------------------------------------------------------- questions
 
 def pick_defaults(spec):
@@ -749,6 +770,8 @@ def main():
     ap.add_argument("--no-compile", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--again", action="store_true",
+                    help="repeat your last run (same channel, order, dates and picks) with the next batch, no questions")
     ap.add_argument("--workers", type=int, default=3, metavar="N",
                     help="how many videos to download at the same time (default 3; 1 = one by one)")
     ap.add_argument("--include-leftover", action="store_true",
@@ -761,6 +784,8 @@ def main():
     ap.add_argument("--cookies", metavar="FILE")
     args = ap.parse_args()
 
+    if args.again and args.channel:
+        sys.exit("Error: --again repeats your last run, so leave the channel out")
     if sum(bool(x) for x in (args.pick, args.top, args.compilations)) > 1:
         sys.exit("Error: use only one of --pick, --top and --compilations")
     workers = max(1, min(args.workers, 8))
@@ -792,6 +817,28 @@ def main():
         s["pick"] = flag_pick or DEFAULTS["pick"]
         s["play"] = flag_play or "asis"
         s["delete_after"] = args.delete_after
+    elif args.again:
+        if not saved.get("channel"):
+            sys.exit("Error: nothing to repeat yet - run  python auto_compile.py  once first")
+        s = {**DEFAULTS, **saved}                      # unlike a fresh interactive run, the last date range is kept
+        for key in limit_flags + ("date_from", "date_to"):
+            if getattr(args, key, None) is not None:
+                s[key] = getattr(args, key)
+        if flag_pick:
+            s["pick"] = flag_pick
+        if flag_play:
+            s["play"] = flag_play
+        if args.delete_after:
+            s["delete_after"] = True
+        if s["sort"] not in SORT_WORDS:
+            s["sort"] = "popular"
+        when = f", uploaded {s['date_from'] or 'the start'} to {s['date_to'] or 'today'}" \
+            if s["date_from"] or s["date_to"] else ""
+        print(f"Repeating your last run: {s['channel']} ({s['type']}), order by {SORT_WORDS[s['sort']]}, "
+              f"{describe_pick(s['pick'])}{when}.")
+        if parse_pick(s["pick"])[0] not in ("new", "comps"):
+            print("  note: that pick can select the same videos again (ones you already have are skipped). "
+                  "For fresh batches use --pick comps:N or --pick new:N.")
     else:
         s = {**DEFAULTS, **saved}
         # A date range is a one-off, so it is never carried over from the last run
@@ -1023,6 +1070,7 @@ def main():
         removed = delete_used_clips(dest, archive)
         if removed:
             print(f"Deleted {mc.plural(removed, 'downloaded clip')} that are now inside compilations.")
+    print_summary(dest, cfg, made)
 
 
 def fmt_views(n):
