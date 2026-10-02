@@ -67,6 +67,7 @@ import subprocess
 import sys
 import time
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -81,6 +82,7 @@ DEFAULTS = {
     "date_from": "", "date_to": "", "dest": str(HERE / "fetched"),
     "max_height": 1080, "min_minutes": 0, "max_minutes": 0, "min_views": 0,
     "play": "asis", "delete_after": False, "check_folders": [],
+    "leftover": "keep",
 }
 SORTS = [("popular", "Most viewed first"), ("unpopular", "Least viewed first"),
          ("oldest", "Oldest first"), ("latest", "Newest first"),
@@ -547,6 +549,61 @@ def compilations_to_videos(k, per, waiting):
     return max(0, k * per - waiting)
 
 
+def leftover_step(job, args, capped):
+    """After compiling: clips that can't fill a whole compilation are still lying there. Ask what to do
+    (or follow --leftover). capped = the user asked for N compilations and got them, so the rest is just
+    spare, not leftover. Returns the names of any compilations made here."""
+    cfg, dest = job.cfg, job.dest
+    n = len(waiting_clips(dest, cfg))
+    per, exact = clips_per_compilation(cfg, job.ranked)
+    if n == 0 or n >= per or capped:
+        return []
+    missing = per - n
+    blocked = job.skip | {k for k, v in job.archive.items() if v.get("run") == job.stamp}
+    spare = [(i + 1, r) for i, r in enumerate(job.ranked) if r["id"] not in blocked]
+    options = [("keep", "Keep them for next time (they join your next compilation)")]
+    if n >= 2:
+        options.append(("short", "Make a shorter compilation from them now"))
+    if len(spare) >= missing:
+        options.append(("topup", f"Download {missing} more to fill one{'' if exact else ' (about)'}"))
+    keys = [k for k, _ in options]
+
+    ask = is_tty() and not args.yes and not args.leftover
+    if ask:
+        print(f"\n{mc.plural(n, 'clip')} left over - a full compilation needs {'' if exact else 'about '}{per}.")
+        choice = mc.ask_choice("What now?", options, job.s["leftover"] if job.s["leftover"] in keys else "keep")
+        job.s["leftover"] = choice
+        mc.save_json(SETTINGS_FILE, job.s)
+    else:
+        choice = args.leftover or "keep"
+        if choice not in keys:
+            why = {"short": "need at least 2 clips", "topup": "the list has no more new videos to add"}[choice]
+            print(f"\n  --leftover {choice} isn't possible here ({why}); keeping the {mc.plural(n, 'clip')} for next time.")
+            choice = "keep"
+
+    if choice == "keep":
+        print(f"\nKept {mc.plural(n, 'leftover clip')} for next time (a full compilation needs {per}).")
+        return []
+    if choice == "short":
+        _, made = compile_now(dest, job.s["play"], "all", include_leftover=True)
+        return made
+    print(f"\nDownloading {missing} more to fill the last compilation...")
+    try:
+        files, failed, job.next_index = download_batch(spare, missing, dest, job.stamp, job.next_index,
+                                                       job.s["max_height"], job.cookies_opts, job.archive,
+                                                       job.s["channel"])
+    except KeyboardInterrupt:
+        clean_partials(dest, job.stamp)
+        print("\nStopped. The leftover clips are kept.")
+        return []
+    if len(files) < missing:
+        print(f"  Only {len(files)} of {missing} arrived, so there still aren't enough for a full one - "
+              "keeping the clips for next time.")
+        return []
+    _, made = compile_now(dest, job.s["play"], "all")
+    return made
+
+
 # --------------------------------------------------------------------------- questions
 
 def pick_defaults(spec):
@@ -640,7 +697,12 @@ def main():
     ap.add_argument("--no-compile", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true")
-    ap.add_argument("--include-leftover", action="store_true")
+    ap.add_argument("--include-leftover", action="store_true",
+                    help="make the shorter final compilation from leftover clips right away (same as --leftover short)")
+    ap.add_argument("--leftover", choices=["keep", "short", "topup"],
+                    help="what to do when clips are left that can't fill a whole compilation: keep them for next "
+                         "time, make a shorter compilation, or download just enough more to fill one "
+                         "(asked when you run it by hand; with --yes the default is keep)")
     ap.add_argument("--cookies-from-browser", metavar="BROWSER")
     ap.add_argument("--cookies", metavar="FILE")
     args = ap.parse_args()
@@ -667,7 +729,7 @@ def main():
     if args.channel:
         # One-line mode: only what you type counts, so an old date range can never sneak in.
         # (Only the download folder and quality cap are remembered between runs.)
-        s = {**DEFAULTS, **{k: saved[k] for k in ("dest", "max_height", "check_folders") if k in saved}}
+        s = {**DEFAULTS, **{k: saved[k] for k in ("dest", "max_height", "check_folders", "leftover") if k in saved}}
         s["channel"] = args.channel
         for key in ("type", "sort", "date_from", "date_to") + limit_flags:
             if getattr(args, key, None) is not None:
@@ -875,8 +937,8 @@ def main():
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     started = time.time()
     try:
-        files, failed, _ = download_batch(queue, target, dest, stamp, 1, s["max_height"], cookies_opts,
-                                          archive, s["channel"]) if target else ([], [], 1)
+        files, failed, next_index = download_batch(queue, target, dest, stamp, 1, s["max_height"], cookies_opts,
+                                                   archive, s["channel"]) if target else ([], [], 1)
     except KeyboardInterrupt:
         clean_partials(dest, stamp)
         print("\n\nStopped. Clips downloaded so far are kept. To turn them into compilations later, run:")
@@ -897,6 +959,10 @@ def main():
     # ---- compile: everything unused in the folder (new clips plus any leftovers), in name order
     print("\nMaking compilations...")
     rc, made = compile_now(dest, s["play"], val if kind == "comps" else "all", args.include_leftover)
+    if rc == 0 and not args.include_leftover:
+        job = SimpleNamespace(dest=dest, cfg=cfg, s=s, ranked=ranked, skip=skip, archive=archive,
+                              cookies_opts=cookies_opts, stamp=stamp, next_index=next_index)
+        made += leftover_step(job, args, capped=(kind == "comps" and len(made) >= val))
 
     if s["delete_after"] and rc == 0:
         removed = delete_used_clips(dest, archive)

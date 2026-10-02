@@ -275,5 +275,57 @@ class CompilationPlanTests(WorldTest):
         self.assertIn("Nothing to do", out)
 
 
+class LeftoverTests(WorldTest):
+    """6 clips with 4 per compilation = 1 compilation and 2 clips left over."""
+
+    def test_default_without_a_person_present_is_keep(self):
+        out = self.run_ac(*self.base("--pick", "6"))
+        self.assertEqual(len(self.made()), 1, out)
+        self.assertIn("Kept 2 leftover clips for next time", out)
+
+    def test_short_makes_a_shorter_compilation_from_the_leftovers(self):
+        out = self.run_ac(*self.base("--pick", "6", "--leftover", "short"))
+        self.assertEqual(len(self.made()), 2, out)
+        self.assertEqual(len(self.clips_on_disk()), 6)
+
+    def test_topup_downloads_just_enough_more_and_completes_a_full_one(self):
+        out = self.run_ac(*self.base("--pick", "6", "--leftover", "topup"))
+        self.assertEqual(len(self.downloads), 8, out)                   # 6, then 2 more
+        self.assertEqual(self.downloads[6:], ["vid00000033", "vid00000032"])   # the next in line (oldest first)
+        self.assertEqual(len(self.made()), 2, out)
+        names = self.clips_on_disk()
+        self.assertEqual(names, sorted(names))                          # top-up files sort after the first batch
+
+    def test_topup_falls_back_to_keep_when_the_list_has_nothing_more(self):
+        self.rows = make_rows(6)
+        out = self.run_ac(*self.base("--pick", "6", "--leftover", "topup"))
+        self.assertIn("isn't possible here", out)
+        self.assertEqual(len(self.made()), 1, out)
+
+    def test_the_users_real_case_twelve_clips_but_fifteen_needed(self):
+        self.write_compile_settings(clips_per_video=15)
+        self.rows = make_rows(12)
+        out = self.run_ac(*self.base("--compilations", "1", "--leftover", "short"))
+        self.assertEqual(len(self.downloads), 12, out)
+        self.assertEqual(len(self.made()), 1, out)                      # one shorter compilation from all 12
+
+    def test_interactive_prompt_offers_options_and_remembers_the_choice(self):
+        out = self.run_ac("@Chan", "--type", "shorts", "--sort", "oldest", "--dest", str(self.dest),
+                          "--pick", "6", inputs=["y", "3"], tty=True)        # Start? y, then option 3 = top up
+        self.assertIn("2 clips left over - a full compilation needs 4.", out)
+        self.assertIn("3) Download 2 more to fill one", out)
+        self.assertEqual(len(self.made()), 2, out)
+        self.assertEqual(self.state("auto_settings.json")["leftover"], "topup")
+
+    def test_no_nagging_when_the_requested_number_of_compilations_was_made(self):
+        self.dest.mkdir()
+        for i in range(6):
+            shutil.copy(template_clip(), self.dest / f"waiting_{i}.mp4")
+        out = self.run_ac("@Chan", "--type", "shorts", "--dest", str(self.dest), "--compilations", "1",
+                          inputs=["y"], tty=True)
+        self.assertEqual(len(self.made()), 1, out)
+        self.assertNotIn("left over", out)                              # 2 spare clips, but 1 compilation was asked for
+
+
 if __name__ == "__main__":
     unittest.main()
