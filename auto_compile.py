@@ -706,6 +706,10 @@ def describe_compile(cfg):
             else f"about {cfg['minutes_per_video']} min each")
     trans = {"fade": "smooth fades", "random": "mixed transitions", "cut": "hard cuts",
              "stinger": "your own transition videos"}.get(cfg["transition"], cfg["transition"])
+    if cfg["transition"] == "stinger":
+        key = str(cfg["stinger_key"])
+        trans += {"auto": " (background auto-detected)", "none": " (shown as they are)"}.get(
+            key, f" ({key} background removed)")
     bits = [size, trans, f"{cfg['quality']} quality"]
     if cfg["order"] != "name":
         bits.append(f"clips by {cfg['order']}")

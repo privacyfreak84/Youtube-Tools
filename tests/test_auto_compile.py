@@ -60,7 +60,7 @@ class WorldTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="ac_test_"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        for name in MODULES:
+        for name in MODULES + ("make_transitions",):          # make_transitions is only run as a script
             shutil.copy(REPO / f"{name}.py", self.tmp / f"{name}.py")
         for name in MODULES:
             sys.modules.pop(name, None)
@@ -512,6 +512,104 @@ class DateRangeUsedUpTests(WorldTest):
         self.assertNotIn("Look at those too", out)
         self.assertEqual(self.downloads, [])
         self.assertIn("Clear or widen it", out)
+
+
+try:
+    import PIL  # noqa: F401
+    HAVE_PIL = True
+except ImportError:
+    HAVE_PIL = False
+
+
+class TransitionLookTests(WorldTest):
+    """How transition VIDEOS are shown (background colour removal, sound), chosen instead of auto-detected."""
+
+    def mc(self):
+        return self.ac.mc
+
+    def wizard(self, answers, **cfg):
+        out = io.StringIO()
+        base = {**self.mc().DEFAULTS, "output_dir": str(self.tmp / "compilations"), **cfg}
+        it = iter(answers)
+        with mock.patch.object(builtins, "input", lambda *_: next(it, "")), contextlib.redirect_stdout(out):
+            self.mc().wizard(base, ask_folder=False)
+        return out.getvalue(), self.state("compile_settings.json")
+
+    def stitch_command(self, **over):
+        mc, seen = self.mc(), []
+        s = {**mc.DEFAULTS, "quality": "fast", **over}
+        with mock.patch.object(mc.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or mock.Mock(returncode=1)):
+            mc.render([Path("a.mp4"), Path("b.mp4")], self.tmp / "o.mp4", s, ("96x96", "25"))
+        return seen[0]
+
+    # ---- what reaches stitch_videos.py
+    def test_the_chosen_look_is_passed_to_stitch(self):
+        cmd = self.stitch_command(stinger_dir="S", stinger_key="none", stinger_audio=False,
+                                  stinger_despill=True, stinger_sim=0.3, stinger_blend=0.1)
+        self.assertEqual(cmd[cmd.index("--key") + 1], "none")
+        self.assertEqual(cmd[cmd.index("--key-similarity") + 1], "0.3")
+        self.assertEqual(cmd[cmd.index("--key-blend") + 1], "0.1")
+        self.assertIn("--despill", cmd)
+        self.assertIn("--no-stinger-audio", cmd)
+
+    def test_defaults_keep_the_old_behaviour(self):
+        cmd = self.stitch_command(stinger_dir="S")
+        self.assertEqual(cmd[cmd.index("--key") + 1], "auto")
+        self.assertNotIn("--despill", cmd)
+        self.assertNotIn("--no-stinger-audio", cmd)
+
+    def test_no_transition_video_flags_without_a_transition_folder(self):
+        self.assertNotIn("--key", self.stitch_command())
+
+    # ---- the questions
+    def test_wizard_lets_you_choose_colour_sound_and_fine_tuning(self):
+        out, cfg = self.wizard(["", "", "", "", "4", str(self.tmp),          # ... transitions = own videos, folder
+                                "3", "n", "y", "0.2", "0.1", "y"])            # green, no sound, fine-tune: 0.2 / 0.1 / despill
+        self.assertIn("Background of the transition videos:", out)
+        self.assertEqual((cfg["transition"], cfg["stinger_key"], cfg["stinger_audio"]), ("stinger", "green", False))
+        self.assertEqual((cfg["stinger_sim"], cfg["stinger_blend"], cfg["stinger_despill"]), (0.2, 0.1, True))
+
+    def test_wizard_custom_colour_is_validated_and_normalised(self):
+        _, cfg = self.wizard(["", "", "", "", "4", str(self.tmp), "7", "zzz", "#ff00ff"])
+        self.assertEqual(cfg["stinger_key"], "FF00FF")
+
+    def test_wizard_none_skips_the_fine_tuning_question(self):
+        out, cfg = self.wizard(["", "", "", "", "4", str(self.tmp), "2"])
+        self.assertEqual(cfg["stinger_key"], "none")
+        self.assertNotIn("Fine-tune", out)
+
+    def test_wizard_keeps_current_choices_when_you_just_press_enter(self):
+        _, cfg = self.wizard([], transition="stinger", stinger_dir=str(self.tmp), stinger_key="blue",
+                             stinger_audio=False, stinger_sim=0.2)
+        self.assertEqual((cfg["stinger_key"], cfg["stinger_audio"], cfg["stinger_sim"]), ("blue", False, 0.2))
+
+    def test_the_questions_are_not_asked_for_other_transitions(self):
+        out, _ = self.wizard(["", "", "", "", "1"])                          # smooth fade
+        self.assertNotIn("Background of the transition videos", out)
+
+    # ---- what the plan says
+    def test_the_plan_line_describes_how_transition_videos_are_shown(self):
+        d = self.ac.describe_compile
+        base = {**self.mc().DEFAULTS, "transition": "stinger"}
+        self.assertIn("your own transition videos (background auto-detected)", d(base))
+        self.assertIn("(shown as they are)", d({**base, "stinger_key": "none"}))
+        self.assertIn("(green background removed)", d({**base, "stinger_key": "green"}))
+
+    # ---- for real
+    @unittest.skipUnless(HAVE_PIL, "needs Pillow to make a transition video")
+    def test_real_render_with_a_generated_green_screen_transition_under_each_choice(self):
+        subprocess.run([sys.executable, str(self.tmp / "make_transitions.py"), "--only", "burst", "--size", "160x160",
+                        "-o", str(self.tmp / "stingers")], check=True, capture_output=True)
+        long_clip = self.tmp / "long.mp4"
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=3:size=96x96:rate=25",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-shortest", "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", str(long_clip)], check=True)
+        self.ac.download_one = lambda url, outtmpl, *a, **k: shutil.copy(long_clip, outtmpl.replace("%(ext)s", "mp4"))
+        for n, key in enumerate(("green", "none", "auto"), 1):
+            self.write_compile_settings(transition="stinger", stinger_dir=str(self.tmp / "stingers"),
+                                        stinger_key=key, stinger_audio=(key != "none"))
+            out = self.run_ac(*self.base("--compilations", "1"))
+            self.assertEqual(len(self.made()), n, f"{key}: {out[-1500:]}")
 
 
 if __name__ == "__main__":

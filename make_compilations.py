@@ -61,6 +61,11 @@ DEFAULTS = {
     "transition": "fade",            # any stitch_videos.py -t value: fade, random, cut, stinger, ...
     "transition_seconds": 1.0,
     "stinger_dir": "",
+    "stinger_key": "auto",           # how transition VIDEOS are shown: auto | none | green | blue | black | white | RRGGBB
+    "stinger_sim": 0.12,             # background-removal tolerance
+    "stinger_blend": 0.05,           # background-removal edge softness
+    "stinger_despill": False,        # remove the green/blue tint left on the edges
+    "stinger_audio": True,           # mix in the transition videos' own sound
     "intro": "",
     "outro": "",
     "quality": "balanced",
@@ -132,6 +137,22 @@ def ask_int(prompt, default, lo=1, hi=100000):
         except ValueError:
             pass
         print(f"   please type a whole number from {lo} to {hi}")
+
+
+def ask_float(prompt, default, lo, hi):
+    while True:
+        ans = ask_text(prompt, default)
+        try:
+            val = float(ans)
+            if lo <= val <= hi:
+                return val
+        except ValueError:
+            pass
+        print(f"   please type a number from {lo:g} to {hi:g}")
+
+
+def ask_yes_no(prompt, default):
+    return ask_text(f"{prompt} (y/n)", "y" if default else "n").lower().startswith("y")
 
 
 def ask_choice(prompt, options, default_key):
@@ -263,6 +284,40 @@ def next_number(ledger, out_dir, prefix):
 
 # --------------------------------------------------------------------------- setup wizard
 
+KEY_CHOICES = [("auto", "Detect it automatically from the video's first frame (works for green/blue screens only)"),
+               ("none", "Remove nothing - the video plays as it is on top of the cut"),
+               ("green", "Remove a green background"),
+               ("blue", "Remove a blue background"),
+               ("black", "Remove a black background"),
+               ("white", "Remove a white background"),
+               ("custom", "Remove another colour (you type it)")]
+
+
+def ask_stinger_look(s):
+    """How the transition videos are shown. Videos with real transparency (like the .mov files from
+    make_transitions.py) need none of this; it is for videos on a plain coloured background."""
+    cur = str(s["stinger_key"])
+    named = [k for k, _ in KEY_CHOICES if k != "custom"]
+    print("\n   How should the transition videos be shown? (ones with real transparency, like the .mov files\n"
+          "   from make_transitions.py, ignore this; it is for videos on a plain coloured background)")
+    pick = ask_choice("   Background of the transition videos:", KEY_CHOICES, cur if cur in named else "custom")
+    if pick == "custom":
+        while True:
+            col = ask_text("   colour to remove, as 6 hex digits, e.g. FF00FF", cur if re.fullmatch(r"[0-9A-Fa-f]{6}", cur) else "")
+            if re.fullmatch(r"#?[0-9A-Fa-f]{6}", col.strip()):
+                s["stinger_key"] = col.strip().lstrip("#").upper()
+                break
+            print("   please type 6 hex digits like 00FF00")
+    else:
+        s["stinger_key"] = pick
+    s["stinger_audio"] = ask_yes_no("   Play the transition videos' own sound?", s["stinger_audio"])
+    if s["stinger_key"] != "none" and ask_yes_no("   Fine-tune the background removal (tolerance, edge softness, edge clean-up)?", False):
+        s["stinger_sim"] = ask_float("   tolerance: how close to that colour still counts as background (0.01-0.50)",
+                                     s["stinger_sim"], 0.01, 0.5)
+        s["stinger_blend"] = ask_float("   edge softness (0.00-0.30)", s["stinger_blend"], 0.0, 0.3)
+        s["stinger_despill"] = ask_yes_no("   Remove the green/blue tint left on edges?", s["stinger_despill"])
+
+
 def wizard(s, ask_folder=True):
     print("\nLet's set this up once. Press Enter on any question to accept the [default].\n")
     q = [0]
@@ -310,6 +365,7 @@ def wizard(s, ask_folder=True):
     s["transition"] = kind
     if kind == "stinger":
         s["stinger_dir"] = ask_path("   folder with your transition videos", s["stinger_dir"], "dir")
+        ask_stinger_look(s)
     else:
         s["stinger_dir"] = ""
     print()
@@ -340,7 +396,12 @@ def render(files, out_path, s, resolution_fps):
            "-t", s["transition"], "-d", str(s["transition_seconds"]),
            "--preset", preset, "--crf", str(crf)]
     if s["stinger_dir"]:
-        cmd += ["--stinger-dir", s["stinger_dir"]]
+        cmd += ["--stinger-dir", s["stinger_dir"], "--key", str(s["stinger_key"]),
+                "--key-similarity", str(s["stinger_sim"]), "--key-blend", str(s["stinger_blend"])]
+        if s["stinger_despill"]:
+            cmd.append("--despill")
+        if not s["stinger_audio"]:
+            cmd.append("--no-stinger-audio")
     if resolution_fps:
         cmd += ["--resolution", resolution_fps[0], "--fps", resolution_fps[1]]
     try:
