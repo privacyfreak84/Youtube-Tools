@@ -72,6 +72,8 @@ OTHER OPTIONS
   --no-compile           only download, don't make compilations
   --dry-run              show which videos WOULD be downloaded, and stop
   --yes                  don't ask for confirmation
+  --setup                go through the compilation questions again (clips per compilation, transitions,
+                         intro/outro, quality). They are asked once and remembered, and the plan shows them.
   --include-leftover     make the shorter final compilation from leftover clips right away
   --cookies-from-browser firefox      (passed to yt-dlp, for age-restricted/members videos)
 
@@ -698,6 +700,35 @@ def print_summary(dest, cfg, made):
     print("Next batch, no questions:   python auto_compile.py --again --yes")
 
 
+def describe_compile(cfg):
+    """One line saying how the compilations will look, from the saved compilation setup."""
+    size = (f"{cfg['clips_per_video']} clips each" if cfg["size_mode"] == "count"
+            else f"about {cfg['minutes_per_video']} min each")
+    trans = {"fade": "smooth fades", "random": "mixed transitions", "cut": "hard cuts",
+             "stinger": "your own transition videos"}.get(cfg["transition"], cfg["transition"])
+    bits = [size, trans, f"{cfg['quality']} quality"]
+    if cfg["order"] != "name":
+        bits.append(f"clips by {cfg['order']}")
+    if cfg["intro"]:
+        bits.append("with intro")
+    if cfg["outro"]:
+        bits.append("with outro")
+    return ", ".join(bits)
+
+
+def run_compile_setup(dest, first_time):
+    """The compilation questions (clips per compilation, transitions, intro/outro, quality, ...)."""
+    if first_time:
+        print("\nFirst time: a short one-time setup for how the compilations should look.")
+    else:
+        print("\nCompilation setup. Your current choices are the defaults, so Enter keeps each one.")
+    mc.wizard(compile_config(), ask_folder=False)
+    cfg = compile_config()
+    if not cfg["clips_dir"]:                          # so a later `python make_compilations.py` finds these clips
+        cfg["clips_dir"] = str(dest.resolve())
+        mc.save_json(COMPILE_SETTINGS, cfg)
+
+
 # --------------------------------------------------------------------------- questions
 
 def pick_defaults(spec):
@@ -791,6 +822,9 @@ def main():
     ap.add_argument("--no-compile", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--setup", action="store_true",
+                    help="go through the compilation setup questions again (clips per compilation, transitions, "
+                         "intro/outro, quality, ...)")
     ap.add_argument("--again", action="store_true",
                     help="repeat your last run (same channel, order, dates and picks) with the next batch, no questions")
     ap.add_argument("--workers", type=int, default=3, metavar="N",
@@ -873,6 +907,11 @@ def main():
         if flag_play:
             s["play"] = flag_play
         interview(s)
+        if not args.no_compile and not args.dry_run and COMPILE_SETTINGS.exists():
+            print(f"8. Compilations: {describe_compile(compile_config())}")
+            if mc.ask_text("   Change how they look? (y/n)", "n").lower().startswith("y"):
+                args.setup = True
+            print()
     if s["sort"] not in SORT_WORDS:
         s["sort"] = "popular"
     for f in args.check_folder or []:
@@ -899,13 +938,8 @@ def main():
 
     # ---- one-time look-and-feel setup for the compilations. Asked before anything is downloaded and before
     # the plan, because "N compilations" needs to know how big one is.
-    if not args.no_compile and not args.dry_run and not COMPILE_SETTINGS.exists():
-        print("\nFirst time: a short one-time setup for how the compilations should look.")
-        mc.wizard({**mc.DEFAULTS}, ask_folder=False)
-        cfg = compile_config()
-        if not cfg["clips_dir"]:                          # so a later `python make_compilations.py` finds these clips
-            cfg["clips_dir"] = str(dest.resolve())
-            mc.save_json(COMPILE_SETTINGS, cfg)
+    if not args.no_compile and not args.dry_run and (args.setup or not COMPILE_SETTINGS.exists()):
+        run_compile_setup(dest, first_time=not COMPILE_SETTINGS.exists())
 
     # ---- read the channel
     base_url = ChannelTable.base_channel_url(s["channel"])
@@ -1046,6 +1080,8 @@ def main():
               + (f", {already} already downloaded earlier (skipped)" if already else "")
               + (f", {lookalikes} look like re-uploads (skipped)" if lookalikes else "")
               + f" -> downloading {len(new_picked)}{length}.")
+    if not args.no_compile:
+        print(f"      Compilations: {describe_compile(cfg)}   (change with --setup)")
     if s["play"] != "asis":
         print("      Compilations will be built " + ("in reverse order." if s["play"] == "reverse"
                                                       else "with each one played backwards."))

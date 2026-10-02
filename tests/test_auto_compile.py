@@ -447,5 +447,40 @@ class NothingNewButClipsWaitingTests(WorldTest):
         self.assertIn("Nothing new: every video in that list has already been downloaded", out)
 
 
+class CompilationLookTests(WorldTest):
+    WIZARD = ["", "", "", "", "", "", "", "2"]       # keep folder/size/clips/order/transition/intro/outro; quality = balanced
+
+    def test_the_plan_shows_how_the_compilations_will_look(self):
+        out = self.run_ac(*self.base("--compilations", "1", "--dry-run"))
+        self.assertIn("Compilations: 4 clips each, hard cuts, fast quality   (change with --setup)", out)
+
+    def test_look_is_not_shown_when_not_compiling(self):
+        out = self.run_ac(*self.base("--pick", "2", "--no-compile"))
+        self.assertNotIn("Compilations:", out)
+
+    def test_interactive_question_8_shows_the_look_and_n_keeps_it(self):
+        out = self.run_ac("--dest", str(self.dest), "--dry-run",
+                          inputs=["@Chan", "2", "", "", "3", "1", "1", "", ""])
+        self.assertNotIn("8. Compilations", out)                      # dry runs have no side effects, so no question
+
+        out = self.run_ac("--dest", str(self.dest), inputs=["@Chan", "2", "", "", "3", "1", "1", "", "", "n"])
+        self.assertIn("8. Compilations: 4 clips each, hard cuts, fast quality", out)
+        self.assertEqual(self.state("compile_settings.json")["quality"], "fast")
+
+    def test_interactive_question_8_yes_reruns_the_setup_with_current_choices_as_defaults(self):
+        out = self.run_ac("--dest", str(self.dest),
+                          inputs=["@Chan", "2", "", "", "3", "1", "1", "", "", "y", *self.WIZARD])
+        self.assertIn("Compilation setup. Your current choices are the defaults", out)
+        cfg = self.state("compile_settings.json")
+        self.assertEqual((cfg["quality"], cfg["transition"], cfg["clips_per_video"]), ("balanced", "cut", 4))
+        self.assertIn("balanced quality", out)                        # the plan already uses the new choices
+        self.assertEqual(len(self.made()), 1, out)
+
+    def test_setup_flag_reruns_the_setup_in_one_line_mode(self):
+        out = self.run_ac(*self.base("--compilations", "1", "--setup"), inputs=self.WIZARD)
+        self.assertEqual(self.state("compile_settings.json")["quality"], "balanced")
+        self.assertIn("Compilation setup.", out)
+
+
 if __name__ == "__main__":
     unittest.main()
