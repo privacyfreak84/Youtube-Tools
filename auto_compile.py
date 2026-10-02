@@ -982,10 +982,9 @@ def main():
 
     kind, val = parse_pick(s["pick"])
     cfg = compile_config()
-    waiting, per, comps_text = 0, None, ""
+    waiting, per, comps_text = len(waiting_clips(dest, cfg)), None, ""
     if kind == "comps":
         per, exact = clips_per_compilation(cfg, ranked)
-        waiting = len(waiting_clips(dest, cfg))
         need = compilations_to_videos(val, per, waiting)
         eff_pick = f"new:{need}" if need else None
         comps_text = ("" if exact else "about ") + mc.plural(per, "clip")
@@ -994,20 +993,33 @@ def main():
     what = describe_pick(s["pick"])
     picked = apply_pick(ranked, eff_pick, skip) if eff_pick else []
 
+    only_waiting = False
+
+    def nothing_to_download(msg):
+        """Nothing new to fetch. If clips are already waiting, carry on with those instead of stopping."""
+        if waiting >= 2 and not args.no_compile:
+            print(msg)
+            print(f"{mc.plural(waiting, 'clip')} are waiting in {dest.name}/ - working on those instead.")
+            return True
+        sys.exit(msg)
+
     if kind != "comps":
         if not picked:
             if kind == "new":
-                sys.exit("Nothing new: every video in that list has already been downloaded"
-                         + (" or looks like a re-upload" if dup_ids else "") + "." + range_note)
-            sys.exit(f"Your pick ({what}) doesn't match anything - the list only has {len(ranked)} videos."
-                     + range_note)
+                only_waiting = nothing_to_download("Nothing new: every video in that list has already been "
+                                                   "downloaded" + (" or looks like a re-upload" if dup_ids else "")
+                                                   + "." + range_note)
+            else:
+                sys.exit(f"Your pick ({what}) doesn't match anything - the list only has {len(ranked)} videos."
+                         + range_note)
     new_picked = [(p, r) for p, r in picked if r["id"] not in skip]
     already = sum(1 for _, r in picked if r["id"] in downloaded)
     lookalikes = len(picked) - len(new_picked) - already
-    if kind != "comps" and not new_picked:
-        sys.exit(f"All {len(picked)} videos in that selection ({what}) were downloaded in an earlier run"
-                 + (" or look like re-uploads" if lookalikes else "") + ".\n"
-                 "To get the next batch, pick different positions (e.g. 61-120) or use new:N." + range_note)
+    if kind != "comps" and not new_picked and not only_waiting:
+        only_waiting = nothing_to_download(
+            f"All {len(picked)} videos in that selection ({what}) were downloaded in an earlier run"
+            + (" or look like re-uploads" if lookalikes else "") + ".\n"
+            "To get the next batch, pick different positions (e.g. 61-120) or use new:N." + range_note)
     if kind == "comps" and not new_picked and waiting < 2:
         sys.exit("Nothing to do: no new videos are available in that list"
                  + (" or they all look like re-uploads" if dup_ids else "") + f" and only {mc.plural(waiting, 'clip')} waiting."
@@ -1027,7 +1039,7 @@ def main():
                 full = (waiting + len(new_picked)) // per
                 print(f"      Only {len(new_picked)} new videos are available in that list, which makes "
                       f"{mc.plural(full, 'full compilation')} at most." + range_note.replace("\n", " ").rstrip())
-    else:
+    elif not only_waiting:
         print(f"\nPlan: order by {SORT_WORDS[s['sort']]}, take {what} of the {len(ranked)} in that list")
         print(f"      = {mc.plural(len(picked), 'video')}"
               + (f", {already} already downloaded earlier (skipped)" if already else "")
@@ -1076,8 +1088,8 @@ def main():
     if args.no_compile:
         print(f"Saved in: {dest}")
         return
-    if not files and kind != "comps":
-        return                          # nothing new arrived (compilations only start from new downloads)
+    if not files and kind != "comps" and not only_waiting:
+        return                          # every download failed: don't compile on the strength of nothing
 
     # ---- compile: everything unused in the folder (new clips plus any leftovers), in name order
     print("\nMaking compilations...")

@@ -413,5 +413,35 @@ class FirstRunTests(WorldTest):
         self.assertEqual(len(self.made()), 1, out)
 
 
+class NothingNewButClipsWaitingTests(WorldTest):
+    """The user's second run: all 12 videos in range were fetched earlier and 12 clips (15 needed) still wait."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_compile_settings(clips_per_video=15)
+        self.rows = make_rows(12)
+        self.run_ac(*self.base("--pick", "new:30", "--no-compile"))          # the earlier run: 12 downloaded, not compiled
+        self.assertEqual(len(self.clips_on_disk()), 12)
+        self.downloads.clear()
+
+    def test_does_not_dead_end_it_works_on_the_waiting_clips(self):
+        out = self.run_ac(*self.base("--pick", "new:30", "--leftover", "short"))
+        self.assertEqual(self.downloads, [], out)
+        self.assertIn("12 clips are waiting", out)
+        self.assertEqual(len(self.made()), 1, out)                           # one shorter compilation from the 12
+
+    def test_by_hand_it_offers_the_leftover_choices(self):
+        out = self.run_ac("@Chan", "--type", "shorts", "--sort", "oldest", "--dest", str(self.dest),
+                          "--pick", "new:30", inputs=["y", "2"], tty=True)   # Start? y ... then 2 = shorter one
+        self.assertIn("12 clips left over - a full compilation needs 15.", out)
+        self.assertEqual(len(self.made()), 1, out)
+
+    def test_with_nothing_waiting_it_still_stops_with_the_old_message(self):
+        for f in self.dest.glob("*.mp4"):
+            f.unlink()
+        out = self.run_ac(*self.base("--pick", "new:30"))
+        self.assertIn("Nothing new: every video in that list has already been downloaded", out)
+
+
 if __name__ == "__main__":
     unittest.main()
