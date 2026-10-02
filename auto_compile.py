@@ -1015,6 +1015,20 @@ def main():
             for r in [r for r in ranked if r["id"] in dup_ids][:5]:
                 print(f"      look-alike: {r['title']}")
 
+    # ---- everything inside the date range is already used up: offer to look beyond it (by hand only)
+    if (parse_pick(s["pick"])[0] in ("new", "comps") and len(rows_in) < len(rows)
+            and all(r["id"] in skip for r in ranked) and is_tty() and not args.yes):
+        unit = "short" if s["type"] == "shorts" else "video"
+        print(f"\nEverything in your date range ({d_from or 'the start'} to {d_to or 'today'}) is already "
+              f"downloaded: {mc.plural(len(rows_in), unit)}. {len(rows) - len(rows_in)} more exist outside it.")
+        if mc.ask_text("Look at those too, ignoring the date range? (y/n)", "y").lower().startswith("y"):
+            rows_in, d_from, d_to, range_note = rows, None, None, ""
+            s["date_from"] = s["date_to"] = ""
+            mc.save_json(SETTINGS_FILE, s)                 # so --again doesn't bring the used-up range back
+            ranked = rank_rows(rows_in, s["sort"])
+            dup_ids = set() if args.keep_duplicates else find_likely_duplicates(ranked, set(downloaded), downloaded)
+            skip = set(downloaded) | dup_ids
+
     kind, val = parse_pick(s["pick"])
     cfg = compile_config()
     waiting, per, comps_text = len(waiting_clips(dest, cfg)), None, ""

@@ -482,5 +482,37 @@ class CompilationLookTests(WorldTest):
         self.assertIn("Compilation setup.", out)
 
 
+class DateRangeUsedUpTests(WorldTest):
+    """The user's third run: every short in the date range was fetched and used; hundreds more exist outside it."""
+
+    def setUp(self):
+        super().setUp()
+        # rows 0..5 are the ones uploaded 2026-09-25..09-30: all downloaded already, nothing waiting
+        (self.tmp / "fetch_archive.json").write_text(json.dumps(
+            {f"vid{i:08d}": {"file": f"gone{i}.mp4", "title": f"Clip {i}", "duration": 20} for i in range(6)}))
+        self.args = ["@Chan", "--type", "shorts", "--sort", "oldest", "--dest", str(self.dest),
+                     "--from", "2026-09-25", "--compilations", "1"]
+
+    def test_by_hand_it_offers_to_look_beyond_the_date_range(self):
+        out = self.run_ac(*self.args, inputs=["y", "y"], tty=True)         # widen? y   Start? y
+        self.assertIn("Everything in your date range (2026-09-25 to today) is already downloaded: 6 shorts. "
+                      "34 more exist outside it.", out)
+        self.assertEqual(len(self.downloads), 4, out)
+        self.assertEqual(sorted(self.downloads), [f"vid{i:08d}" for i in range(36, 40)])   # the oldest four
+        self.assertEqual(len(self.made()), 1, out)
+        self.assertEqual(self.state("auto_settings.json")["date_from"], "")
+
+    def test_saying_no_keeps_the_range_and_stops(self):
+        out = self.run_ac(*self.args, inputs=["n"], tty=True)
+        self.assertEqual(self.downloads, [], out)
+        self.assertIn("Nothing to do", out)
+
+    def test_unattended_never_asks_and_never_widens(self):
+        out = self.run_ac(*self.args, "--yes")
+        self.assertNotIn("Look at those too", out)
+        self.assertEqual(self.downloads, [])
+        self.assertIn("Clear or widen it", out)
+
+
 if __name__ == "__main__":
     unittest.main()
