@@ -291,7 +291,7 @@ class LeftoverTests(WorldTest):
     def test_topup_downloads_just_enough_more_and_completes_a_full_one(self):
         out = self.run_ac(*self.base("--pick", "6", "--leftover", "topup"))
         self.assertEqual(len(self.downloads), 8, out)                   # 6, then 2 more
-        self.assertEqual(self.downloads[6:], ["vid00000033", "vid00000032"])   # the next in line (oldest first)
+        self.assertEqual(sorted(self.downloads[6:]), ["vid00000032", "vid00000033"])   # the next two in line
         self.assertEqual(len(self.made()), 2, out)
         names = self.clips_on_disk()
         self.assertEqual(names, sorted(names))                          # top-up files sort after the first batch
@@ -325,6 +325,49 @@ class LeftoverTests(WorldTest):
                           inputs=["y"], tty=True)
         self.assertEqual(len(self.made()), 1, out)
         self.assertNotIn("left over", out)                              # 2 spare clips, but 1 compilation was asked for
+
+
+class ParallelTests(WorldTest):
+    def test_order_of_file_names_follows_the_queue_even_if_downloads_finish_out_of_order(self):
+        import time as _t
+        real = self.fake_download
+
+        def slow_first(url, outtmpl, *a, **k):
+            if url.endswith("vid00000039"):
+                _t.sleep(0.4)                               # the first in line finishes last
+            return real(url, outtmpl, *a, **k)
+        self.ac.download_one = slow_first
+        self.run_ac(*self.base("--pick", "6", "--no-compile", "--workers", "3"))
+        ids = [n.rsplit("_", 1)[-1][:-4] for n in self.clips_on_disk()]
+        self.assertEqual(ids, [f"vid{i:08d}" for i in range(39, 33, -1)])
+
+    def test_a_failure_is_replaced_by_the_next_in_line(self):
+        self.fail_ids = {"vid00000038", "vid00000036"}
+        out = self.run_ac(*self.base("--pick", "new:6", "--no-compile", "--workers", "3"))
+        self.assertEqual(len(self.clips_on_disk()), 6, out)
+        self.assertEqual(len(self.state("fetch_archive.json")), 6)
+        self.assertIn("skipped #2", out)
+
+    def test_never_downloads_more_than_asked(self):
+        self.run_ac(*self.base("--pick", "new:5", "--no-compile", "--workers", "4"))
+        self.assertEqual(len(self.downloads), 5)
+
+    def test_workers_1_still_works_one_by_one(self):
+        out = self.run_ac(*self.base("--pick", "4", "--workers", "1"))
+        self.assertEqual(len(self.made()), 1, out)
+        self.assertIn("[1/4] #1", out)
+
+    def test_ctrl_c_keeps_what_was_downloaded_and_stops_cleanly(self):
+        real = self.fake_download
+
+        def boom(url, outtmpl, *a, **k):
+            if url.endswith("vid00000036"):
+                raise KeyboardInterrupt
+            return real(url, outtmpl, *a, **k)
+        self.ac.download_one = boom
+        out = self.run_ac(*self.base("--pick", "6", "--workers", "3"))
+        self.assertIn("Stopped. Clips downloaded so far are kept", out)
+        self.assertEqual(self.made(), [])                   # no compilation after an interrupt
 
 
 if __name__ == "__main__":

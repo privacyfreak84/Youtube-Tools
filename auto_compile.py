@@ -65,7 +65,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
@@ -378,36 +380,86 @@ def clean_partials(dest, prefix):
             p.unlink(missing_ok=True)
 
 
-def download_batch(queue, target, dest, stamp, first_index, max_height, cookies_opts, archive, channel):
+def _remember(archive, r, got, channel, stamp):
+    archive[r["id"]] = {"file": got.name, "title": r["title"], "views": r["views"],
+                        "duration": r.get("duration"), "channel": channel, "run": stamp}
+    mc.save_json(ARCHIVE_FILE, archive)
+
+
+def _why(e):
+    return str(e).splitlines()[0][:150] if str(e) else "download failed"
+
+
+def download_batch(queue, target, dest, stamp, first_index, max_height, cookies_opts, archive, channel, workers=1):
     """Download from queue ([(position, row), ...] in the chosen order) until `target` clips have arrived.
     A clip that fails is skipped and the next one in the queue takes its place. File names carry the
-    order (stamp_NNNN_id), and every success goes into the archive straight away.
-    Returns (files, failed_positions, next_index)."""
-    files, failed, index = [], [], first_index
-    for pos, r in queue:
-        if len(files) >= target:
-            break
-        stem = f"{stamp}_{index:04d}_{r['id']}"
-        index += 1
-        print(f"[{len(files) + 1}/{target}] #{pos} {r['title']}")
-        try:
-            download_one(f"https://www.youtube.com/watch?v={r['id']}", str(dest / (stem + ".%(ext)s")),
-                         max_height, cookies_opts)
-            got = find_downloaded(dest, stem)
-            if got is None:
-                raise RuntimeError("finished but no file was found")
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            failed.append(pos)
-            print(f"   skipped ({str(e).splitlines()[0][:150] if str(e) else 'download failed'})")
-            clean_partials(dest, stem)
-            continue
-        files.append(got)
-        archive[r["id"]] = {"file": got.name, "title": r["title"], "views": r["views"],
-                            "duration": r.get("duration"), "channel": channel, "run": stamp}
-        mc.save_json(ARCHIVE_FILE, archive)
-    return files, failed, index
+    order (stamp_NNNN_id) even when several download at once, and every success goes into the archive
+    straight away. Returns (files in queue order, failed_positions, next_index)."""
+    if workers <= 1:
+        files, failed, index = [], [], first_index
+        for pos, r in queue:
+            if len(files) >= target:
+                break
+            stem = f"{stamp}_{index:04d}_{r['id']}"
+            index += 1
+            print(f"[{len(files) + 1}/{target}] #{pos} {r['title']}")
+            try:
+                download_one(f"https://www.youtube.com/watch?v={r['id']}", str(dest / (stem + ".%(ext)s")),
+                             max_height, cookies_opts)
+                got = find_downloaded(dest, stem)
+                if got is None:
+                    raise RuntimeError("finished but no file was found")
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                failed.append(pos)
+                print(f"   skipped ({_why(e)})")
+                clean_partials(dest, stem)
+                continue
+            files.append(got)
+            _remember(archive, r, got, channel, stamp)
+        return files, failed, index
+
+    stop = threading.Event()
+    pending, inflight, done_files, failed, index = list(queue), {}, {}, [], first_index
+
+    def work(stem, r):
+        download_one(f"https://www.youtube.com/watch?v={r['id']}", str(dest / (stem + ".%(ext)s")),
+                     max_height, cookies_opts, stop=stop, show_progress=False)
+        got = find_downloaded(dest, stem)
+        if got is None:
+            raise RuntimeError("finished but no file was found")
+        return got
+
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        while True:
+            while pending and len(done_files) + len(inflight) < target and len(inflight) < workers:
+                pos, r = pending.pop(0)
+                stem = f"{stamp}_{index:04d}_{r['id']}"
+                inflight[pool.submit(work, stem, r)] = (index, pos, r, stem)
+                index += 1
+            if not inflight:
+                break
+            finished, _ = wait(inflight, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                idx, pos, r, stem = inflight.pop(fut)
+                try:
+                    got = fut.result()
+                except Exception as e:                      # (Ctrl-C is not an Exception: it goes to the handler below)
+                    failed.append(pos)
+                    clean_partials(dest, stem)
+                    print(f"   skipped #{pos} {r['title']} ({_why(e)})")
+                    continue
+                done_files[idx] = got
+                _remember(archive, r, got, channel, stamp)
+                print(f"[{len(done_files)}/{target}] #{pos} {r['title']}")
+    except KeyboardInterrupt:
+        stop.set()                                          # running downloads end at their next progress tick
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+    return [done_files[i] for i in sorted(done_files)], failed, index
 
 
 def compile_now(dest, play, count="all", include_leftover=False):
@@ -591,7 +643,7 @@ def leftover_step(job, args, capped):
     try:
         files, failed, job.next_index = download_batch(spare, missing, dest, job.stamp, job.next_index,
                                                        job.s["max_height"], job.cookies_opts, job.archive,
-                                                       job.s["channel"])
+                                                       job.s["channel"], job.workers)
     except KeyboardInterrupt:
         clean_partials(dest, job.stamp)
         print("\nStopped. The leftover clips are kept.")
@@ -697,6 +749,8 @@ def main():
     ap.add_argument("--no-compile", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--workers", type=int, default=3, metavar="N",
+                    help="how many videos to download at the same time (default 3; 1 = one by one)")
     ap.add_argument("--include-leftover", action="store_true",
                     help="make the shorter final compilation from leftover clips right away (same as --leftover short)")
     ap.add_argument("--leftover", choices=["keep", "short", "topup"],
@@ -709,6 +763,7 @@ def main():
 
     if sum(bool(x) for x in (args.pick, args.top, args.compilations)) > 1:
         sys.exit("Error: use only one of --pick, --top and --compilations")
+    workers = max(1, min(args.workers, 8))
     if args.compilations is not None and args.compilations < 1:
         sys.exit("Error: --compilations must be at least 1")
     if args.reverse and args.reverse_each:
@@ -938,7 +993,7 @@ def main():
     started = time.time()
     try:
         files, failed, next_index = download_batch(queue, target, dest, stamp, 1, s["max_height"], cookies_opts,
-                                                   archive, s["channel"]) if target else ([], [], 1)
+                                                   archive, s["channel"], workers) if target else ([], [], 1)
     except KeyboardInterrupt:
         clean_partials(dest, stamp)
         print("\n\nStopped. Clips downloaded so far are kept. To turn them into compilations later, run:")
@@ -961,7 +1016,7 @@ def main():
     rc, made = compile_now(dest, s["play"], val if kind == "comps" else "all", args.include_leftover)
     if rc == 0 and not args.include_leftover:
         job = SimpleNamespace(dest=dest, cfg=cfg, s=s, ranked=ranked, skip=skip, archive=archive,
-                              cookies_opts=cookies_opts, stamp=stamp, next_index=next_index)
+                              cookies_opts=cookies_opts, stamp=stamp, next_index=next_index, workers=workers)
         made += leftover_step(job, args, capped=(kind == "comps" and len(made) >= val))
 
     if s["delete_after"] and rc == 0:
