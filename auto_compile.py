@@ -524,8 +524,11 @@ def main():
             sys.exit(f"Error: {e}")
         print(f" done ({resolver.probes} lookups).")
         print(f"  {len(rows_in)} of them were uploaded {d_from or 'at the start'} to {d_to or 'today'}.")
+        range_note = (f"\nNote: your date range ({d_from or 'start'} to {d_to or 'today'}) narrowed the "
+                      f"{len(rows)} {s['type']} down to {len(rows_in)}. Clear or widen it to reach more.")
     else:
         rows_in = rows
+        range_note = ""
 
     # ---- length / views limits
     def keep(r):
@@ -551,13 +554,14 @@ def main():
     what = describe_pick(s["pick"])
     if not picked:
         if parse_pick(s["pick"])[0] == "new":
-            sys.exit("Nothing new: every video in that list has already been downloaded.")
-        sys.exit(f"Your pick ({what}) doesn't match anything - the list only has {len(ranked)} videos.")
+            sys.exit("Nothing new: every video in that list has already been downloaded." + range_note)
+        sys.exit(f"Your pick ({what}) doesn't match anything - the list only has {len(ranked)} videos."
+                 + range_note)
     new_picked = [(p, r) for p, r in picked if r["id"] not in downloaded]
     already = len(picked) - len(new_picked)
     if not new_picked:
         sys.exit(f"All {len(picked)} videos in that selection ({what}) were downloaded in an earlier run.\n"
-                 "To get the next batch, pick different positions (e.g. 61-120) or use new:N.")
+                 "To get the next batch, pick different positions (e.g. 61-120) or use new:N." + range_note)
 
     known = [r["duration"] for _, r in new_picked if r.get("duration")]
     length = f", about {mc.fmt_duration(sum(known))} of video" if known else ""
