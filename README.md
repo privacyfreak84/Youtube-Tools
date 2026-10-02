@@ -45,6 +45,22 @@ python auto_compile.py @Channel --from 2024-01-01 --to 2024-06-30 --sort popular
 
 Run `python auto_compile.py --help` or read the header of the script for the full list of `--sort` and `--pick` options.
 
+### Mass-producing compilations
+
+```bash
+python auto_compile.py @Channel --sort oldest --compilations 5   # just enough new videos for 5 full compilations
+python auto_compile.py --again --yes                             # next batch, same settings, no questions
+python auto_compile.py --again --yes --compilations 10           # ...or a bigger one this time
+```
+
+- **Plan by compilations, not videos.** `--compilations N` (or `--pick comps:N`, or the first option in the questions) works out how many videos you need from the compilation size you set up, and counts clips already waiting in the download folder, so nothing is downloaded that you don't need.
+- **Never downloads the same video twice.** Besides its own history it looks for video ids in the file names in your download folder (including yt-dlp's usual `Title [id].mp4`) and in any `--check-folder FOLDER` you give it (remembered). Those count as downloaded. Videos that look like re-uploads (same title and same length as one you have) are skipped too; `--keep-duplicates` turns that off. The look-alike check is a guess, so it always tells you how many it skipped.
+- **Leftovers are handled for you.** If clips are left that can't fill a whole compilation, it asks: keep them for next time, make a shorter compilation now, or download just enough more to fill one. For unattended runs use `--leftover keep|short|topup` (default with `--yes` is keep). The "download more" option only appears when the list can actually supply them.
+- **Faster downloads.** `--workers N` downloads N videos at once (default 3). Use `--workers 1` if YouTube starts refusing.
+- **`--again`** repeats your last run with the next batch. Unlike a fresh run, it keeps the last run's date range.
+- **A summary at the end** lists the compilations made, how many clips are waiting, and the command for the next batch.
+- `--delete-after` now also removes older leftover clips once they have been used (only files this script downloaded).
+
 In interactive mode your answers are remembered as the defaults for next time, **except the date range**, which always starts blank so an old range can't quietly shrink the list. Pass `--from` / `--to` to prefill it; at the prompt, Enter keeps what is shown and `-` means no limit.
 
 ### Compiling clips you already have
@@ -98,7 +114,17 @@ python yt_toolkit.py <tool> --help                    # flags for one tool
 
 ## State files
 
-The scripts write small JSON files next to themselves so runs can resume: `auto_settings.json`, `fetch_archive.json`, `compile_settings.json`, `compile_ledger.json` and `compile_cache.json`. Delete one to reset that piece of state.
+The scripts write small JSON files next to themselves so runs can resume: `auto_settings.json`, `fetch_archive.json`, `compile_settings.json`, `compile_ledger.json` and `compile_cache.json`. Delete one to reset that piece of state. They are listed in `.gitignore`, as are the `fetched/`, `compilations/` and `stingers/` folders.
+
+## Tests
+
+`auto_compile.py` has an offline test suite: the channel and the downloads are faked, but ffmpeg really renders the compilations.
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Needs ffmpeg and ffprobe on your `PATH` and `pip install yt-dlp tabulate`. The tests run in a scratch copy of the scripts, so they never touch your settings or downloads.
 
 ## Status
 

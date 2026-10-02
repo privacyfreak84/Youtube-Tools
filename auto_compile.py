@@ -19,6 +19,19 @@ HOW TO USE
   python auto_compile.py @Channel --sort oldest --pick 25-70 --reverse    same, but played newest-to-oldest
   python auto_compile.py @Channel --from 2024-01-01 --to 2024-06-30 --sort popular --pick new:60
 
+MASS PRODUCTION (the fast way)
+------------------------------
+  python auto_compile.py @Channel --sort oldest --compilations 5     download just enough NEW videos for 5
+                                                                     full compilations, then make them
+  python auto_compile.py --again --yes                               repeat the last run with the next batch,
+                                                                     no questions (run it again and again)
+  Clips already waiting in the download folder are counted, so you never download more than needed. If the
+  channel runs out and a few clips are left that can't fill a compilation, you are asked whether to keep
+  them, make a shorter compilation, or download just enough more to fill one (--leftover keep|short|topup).
+  Videos you already have are never downloaded twice: it checks its history AND the video ids in the file
+  names in your download folder (and any --check-folder), so clips you downloaded by hand count too. Videos
+  that look like re-uploads (same title and length as one you have) are skipped as well.
+
 HOW SELECTION WORKS
 -------------------
   1. Take the channel's list and keep only what matches your dates / length / views limits.
@@ -34,6 +47,8 @@ HOW SELECTION WORKS
            1-10,25,40-   any mix of the above, separated by commas
            new:60        the next 60 you have NOT downloaded yet (skips ones you already have and
                          moves further down the list - handy for repeated runs)
+           comps:5       enough new videos to make 5 full compilations (like new:N, but N is worked
+                         out for you from the compilation size and the clips already waiting)
   Positions always count within the list from step 1/2, so "25-70" means the same videos every time;
   ones you already downloaded are simply skipped.
 
@@ -46,12 +61,18 @@ OTHER OPTIONS
   --reverse              compile in reverse: the last picked video first
   --reverse-each         same clips in each compilation, but each one played backwards
   --top N                same as --pick new:N
+  --compilations N, -n N same as --pick comps:N
+  --again                repeat the last run (same channel, order, dates, pick) with the next batch
+  --leftover keep|short|topup   what to do with clips that can't fill a whole compilation (default: ask)
+  --workers N            download N videos at once (default 3; use 1 if YouTube starts refusing)
+  --check-folder FOLDER  also look here for videos you already have (remembered; repeatable)
+  --keep-duplicates      download look-alike re-uploads too
   --redownload           ignore the "already downloaded" list
   --delete-after         delete downloaded clips once they are safely inside a compilation
   --no-compile           only download, don't make compilations
   --dry-run              show which videos WOULD be downloaded, and stop
   --yes                  don't ask for confirmation
-  --include-leftover     also make a final shorter compilation from leftover clips
+  --include-leftover     make the shorter final compilation from leftover clips right away
   --cookies-from-browser firefox      (passed to yt-dlp, for age-restricted/members videos)
 
 Only use this on videos you own or have the right to reuse.

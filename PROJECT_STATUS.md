@@ -13,3 +13,10 @@ So far, these scripts have been preliminarily created. They are pending further 
 - Fixed: `--from` / `--to` were ignored in interactive mode (only worked with a channel on the command line). They now prefill the date prompts.
 - Improved: the "all downloaded" / "nothing new" / "pick doesn't match" messages now say when a date range narrowed the list.
 - Tested with a faked 844-short channel (no network): the old code reproduced the reported output exactly; the fixed code plans against all 844. Also checked `--from` prefill, `-` to clear, and that one-line mode is unchanged.
+
+## 2026-10-03
+- `auto_compile.py` reworked for mass production. New: plan by compilations (`--compilations N` / `comps:N`, first wizard option) which counts clips already waiting in the download folder; leftover handling when a few clips can't fill a compilation (keep / shorter one / download just enough more, `--leftover`); `--again` to repeat the last run with the next batch; parallel downloads (`--workers`, default 3, names keep the chosen order); an end-of-run summary.
+- New: detection of videos you already have. Video ids found in file names in the download folder (and `--check-folder`) count as downloaded and are added to the history ("adopted"). Videos with the same title and length as one you have are skipped as likely re-uploads (`--keep-duplicates` turns this off). The look-alike check is a heuristic and older history entries without a stored length can't be matched by it.
+- Changed: the compilation setup now runs before the plan (it must know the compilation size) and sets `clips_dir` to the download folder. `--delete-after` also clears used leftovers from earlier runs, but only clips this script downloaded itself. The default pick for a first run is now `comps:3`.
+- Added `tests/test_auto_compile.py` (34+ offline tests with a faked YouTube and real ffmpeg) and `.gitignore` for local state, downloads and compilations.
+- NOT tested against real YouTube from here (no access): parallel downloads against real rate limits and Ctrl-C during real yt-dlp downloads. If downloads misbehave, try `--workers 1` first.
