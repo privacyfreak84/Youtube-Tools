@@ -436,6 +436,10 @@ class NothingNewButClipsWaitingTests(WorldTest):
         self.assertIn("12 clips left over - a full compilation needs 15.", out)
         self.assertEqual(len(self.made()), 1, out)
 
+    def test_no_misleading_range_note_when_the_range_cut_nothing_off(self):
+        out = self.run_ac(*self.base("--pick", "new:30", "--from", "2026-01-01", "--leftover", "keep"))
+        self.assertNotIn("narrowed", out)
+
     def test_with_nothing_waiting_it_still_stops_with_the_old_message(self):
         for f in self.dest.glob("*.mp4"):
             f.unlink()

@@ -927,7 +927,8 @@ def main():
         print(f" done ({resolver.probes} lookups).")
         print(f"  {len(rows_in)} of them were uploaded {d_from or 'at the start'} to {d_to or 'today'}.")
         range_note = (f"\nNote: your date range ({d_from or 'start'} to {d_to or 'today'}) narrowed the "
-                      f"{len(rows)} {s['type']} down to {len(rows_in)}. Clear or widen it to reach more.")
+                      f"{len(rows)} {s['type']} down to {len(rows_in)}. Clear or widen it to reach more."
+                      if len(rows_in) < len(rows) else "")           # no note when the range cut nothing off
     else:
         rows_in = rows
         range_note = ""
