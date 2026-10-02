@@ -59,6 +59,7 @@ python auto_compile.py --again --yes --compilations 10           # ...or a bigge
 - **Faster downloads.** `--workers N` downloads N videos at once (default 3). Use `--workers 1` if YouTube starts refusing.
 - **`--again`** repeats your last run with the next batch. Unlike a fresh run, it keeps the last run's date range.
 - **Your compilation look is always visible.** The compilation questions (clips per compilation, transitions, intro/outro, quality) are asked once and remembered. Every plan prints them, e.g. `Compilations: 15 clips each, mixed transitions, balanced quality`, the interactive run ends its questions with "8. Change how they look?", and `--setup` goes through them again.
+- **You choose how your own transition videos are shown.** If you pick "My own transition videos" in the compilation setup, you are asked how they are displayed: detect a green/blue background automatically (the old behaviour, which looks at the video's first frame), remove nothing and play it as-is, remove a specific colour (green, blue, black, white or any hex), whether to play its own sound, and optionally the tolerance, edge softness and edge clean-up. Videos with real transparency, like the `.mov` files from `make_transitions.py`, need none of this.
 - **A summary at the end** lists the compilations made, how many clips are waiting, and the command for the next batch.
 - `--delete-after` now also removes older leftover clips once they have been used (only files this script downloaded).
 

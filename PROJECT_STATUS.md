@@ -26,3 +26,8 @@ So far, these scripts have been preliminarily created. They are pending further 
 
 ## 2026-10-03 (later still)
 - `auto_compile.py` now shows the saved compilation setup (clips per compilation, transitions, quality, intro/outro) in every plan, asks "8. Change how they look?" at the end of the interactive questions, and has `--setup` to redo those questions. Before, they were asked once on the very first run and never mentioned again, so it looked as if they had vanished.
+
+## 2026-10-03 (evening)
+- `auto_compile.py`: when the whole date range is already downloaded and used (nothing new, nothing waiting), a run you start by hand now offers to look beyond the range instead of just stopping. Unattended (`--yes`) runs never widen it and still stop with a note.
+- Transition videos: the compilation setup (`make_compilations.py --setup`, `auto_compile.py --setup`, question 8) now lets you choose how they are displayed: auto-detect the background (the old behaviour: it looks at the video's first frame, so a video with an unusual first frame could be keyed wrongly), remove nothing, remove green/blue/black/white or a hex colour, play their own sound or not, and fine-tune tolerance, edge softness and edge clean-up. New settings: `stinger_key`, `stinger_sim`, `stinger_blend`, `stinger_despill`, `stinger_audio` (older saved settings keep working with the old defaults). Checked on a green-screen video: `none` leaves the green on screen, `green` removes it.
+- Interpretation note: "how transitions are displayed instead of being decided by the first clip" was read as the transition videos' background auto-detection from the first frame. Output size and frame rate were already the most common among the clips, not the first clip's.
