@@ -214,5 +214,66 @@ class DetectionTests(WorldTest):
         self.assertEqual(len(self.downloads), 3)
 
 
+class CompilationPlanTests(WorldTest):
+    def put_waiting(self, n):
+        self.dest.mkdir(exist_ok=True)
+        for i in range(n):
+            shutil.copy(template_clip(), self.dest / f"waiting_{i}.mp4")
+
+    def test_parse_and_describe_comps(self):
+        self.assertEqual(self.ac.parse_pick("comps:3"), ("comps", 3))
+        self.assertEqual(self.ac.describe_pick("comps:1"), "enough new videos for 1 compilation")
+        with self.assertRaises(ValueError):
+            self.ac.apply_pick(self.rows, "comps:3", set())
+
+    def test_downloads_exactly_what_is_missing_for_n_full_compilations(self):
+        out = self.run_ac(*self.base("--compilations", "2"))              # 2 x 4 clips, nothing waiting
+        self.assertEqual(len(self.downloads), 8, out)
+        self.assertEqual(len(self.made()), 2, out)
+        self.assertEqual(len(self.clips_on_disk()), 8)                    # all used, none left over
+
+    def test_clips_already_waiting_are_counted(self):
+        self.put_waiting(3)
+        out = self.run_ac(*self.base("--pick", "comps:2"))
+        self.assertIn("3 clips already waiting", out)
+        self.assertEqual(len(self.downloads), 5, out)                     # 8 needed - 3 waiting
+        self.assertEqual(len(self.made()), 2, out)
+
+    def test_no_download_when_enough_clips_are_waiting(self):
+        self.put_waiting(9)
+        out = self.run_ac(*self.base("--compilations", "2"))
+        self.assertEqual(self.downloads, [], out)
+        self.assertIn("already enough", out)
+        self.assertEqual(len(self.made()), 2, out)                        # exactly 2 even though 9 clips wait
+        self.assertEqual(len(self.state("compile_ledger.json")["compilations"]), 2)
+
+    def test_limited_by_what_the_channel_has(self):
+        self.rows = make_rows(6)
+        out = self.run_ac(*self.base("--compilations", "2"))
+        self.assertEqual(len(self.downloads), 6, out)
+        self.assertIn("Only 6 new videos are available", out)
+        self.assertIn("1 full compilation at most", out)
+        self.assertEqual(len(self.made()), 1, out)
+
+    def test_by_minutes_the_size_is_estimated_from_clip_lengths(self):
+        self.write_compile_settings(size_mode="minutes", minutes_per_video=1)    # 60s / 20s clips = 3 clips
+        out = self.run_ac(*self.base("--compilations", "2", "--dry-run"))
+        self.assertIn("2 compilations of about 3 clips", out)
+        self.assertIn("downloading 6 new", out)
+
+    def test_wizard_offers_compilations_as_the_first_pick_option(self):
+        # channel, shorts, no from, no to, oldest, pick option 1 (compilations), 2 of them, defaults for the rest
+        out = self.run_ac("--dry-run", "--dest", str(self.dest), inputs=["@Chan", "2", "", "", "3", "1", "2"])
+        self.assertIn("1) Enough new videos for N compilations", out)
+        self.assertIn("make 2 compilations of 4 clips each = 8 clips", out)
+        self.assertEqual(self.state("auto_settings.json")["pick"], "comps:2")
+
+    def test_nothing_available_and_nothing_waiting_is_a_clear_stop(self):
+        self.rows = make_rows(3)
+        (self.tmp / "fetch_archive.json").write_text(json.dumps({r["id"]: {"file": "x.mp4"} for r in self.rows}))
+        out = self.run_ac(*self.base("--compilations", "1"))
+        self.assertIn("Nothing to do", out)
+
+
 if __name__ == "__main__":
     unittest.main()

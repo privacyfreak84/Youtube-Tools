@@ -59,6 +59,7 @@ Only use this on videos you own or have the right to reuse.
 
 import argparse
 import json
+import math
 import random
 import re
 import shutil
@@ -76,7 +77,7 @@ COMPILE_SETTINGS = HERE / "compile_settings.json"
 COMPILE_LEDGER = HERE / "compile_ledger.json"
 
 DEFAULTS = {
-    "channel": "", "type": "videos", "sort": "popular", "pick": "new:30",
+    "channel": "", "type": "videos", "sort": "popular", "pick": "comps:3",
     "date_from": "", "date_to": "", "dest": str(HERE / "fetched"),
     "max_height": 1080, "min_minutes": 0, "max_minutes": 0, "min_views": 0,
     "play": "asis", "delete_after": False, "check_folders": [],
@@ -90,7 +91,8 @@ SORT_WORDS = {"popular": "most viewed", "unpopular": "least viewed", "oldest": "
 PLAYS = [("asis", "As selected (1st picked video first)"),
          ("reverse", "Reversed (last picked video first)"),
          ("each", "Each compilation played backwards (same clips in each)")]
-PICKS = [("first", "The first N videos"),
+PICKS = [("comps", "Enough new videos for N compilations (best for mass production)"),
+         ("first", "The first N videos"),
          ("new", "The next N videos I haven't downloaded yet"),
          ("range", "A range: from position X to position Y"),
          ("last", "The last N videos"),
@@ -259,7 +261,7 @@ def parse_pick(spec):
         if int(t) < 1:
             raise ValueError("the number must be at least 1")
         return ("first", int(t))
-    m = re.fullmatch(r"(first|last|new|random|every):(\d+)", t)
+    m = re.fullmatch(r"(first|last|new|random|every|comps):(\d+)", t)
     if m:
         n = int(m.group(2))
         if n < 1:
@@ -289,6 +291,8 @@ def parse_pick(spec):
 def apply_pick(rows, spec, downloaded):
     """rows: the filtered, sorted list. Returns [(position, row), ...] in list order (positions are 1-based)."""
     kind, val = parse_pick(spec)
+    if kind == "comps":
+        raise ValueError("a 'comps:N' pick has to be turned into 'new:N' first (see compilations_to_videos)")
     n = len(rows)
     if kind == "first":
         idx = list(range(min(val, n)))
@@ -317,6 +321,8 @@ def describe_pick(spec):
         return f"{val} random ones (shown in list order)"
     if kind == "new":
         return f"the next {val} not downloaded yet"
+    if kind == "comps":
+        return f"enough new videos for {mc.plural(val, 'compilation')}"
     if len(val) == 1 and val[0][2] > 1 and val[0][0] == 1 and val[0][1] is None:
         return f"every {val[0][2]}th video"
     bits = []
@@ -502,14 +508,53 @@ def find_likely_duplicates(ranked, known, archive):
     return dups
 
 
+# --------------------------------------------------------------------------- planning by compilations
+
+def compile_config():
+    """The compilation settings from make_compilations.py (its defaults where nothing is saved yet)."""
+    return {**mc.DEFAULTS, **mc.load_json(COMPILE_SETTINGS, {})}
+
+
+def waiting_clips(dest, cfg):
+    """Clips in the download folder that are not inside any compilation yet -> [(key, path)]."""
+    if not dest.is_dir():
+        return []
+    ledger = mc.load_json(COMPILE_LEDGER, {})
+    ledger.setdefault("compilations", {})
+    ledger.setdefault("skipped", {})
+    used = mc.used_keys(ledger)
+    return [(k, p) for k, p in mc.scan_clips(dest, skip_dir=Path(cfg["output_dir"])) if k not in used]
+
+
+def clips_per_compilation(cfg, rows):
+    """How many clips make one compilation -> (number, exact?). By count it is exact; by minutes it is
+    estimated from the average clip length in the list."""
+    if cfg["size_mode"] == "count":
+        return cfg["clips_per_video"], True
+    lens = [r["duration"] for r in rows if r.get("duration")]
+    avg = sum(lens) / len(lens) if lens else 30
+    return max(2, math.ceil(cfg["minutes_per_video"] * 60 / avg)), False
+
+
+def eff_need(new_spec):
+    """N out of a 'new:N' pick."""
+    return parse_pick(new_spec)[1]
+
+
+def compilations_to_videos(k, per, waiting):
+    """How many NEW videos are needed so that k full compilations can be made, counting the clips that
+    are already waiting in the download folder."""
+    return max(0, k * per - waiting)
+
+
 # --------------------------------------------------------------------------- questions
 
 def pick_defaults(spec):
     try:
         kind, val = parse_pick(spec)
     except ValueError:
-        return "new", 30
-    if kind in ("first", "last", "new", "random"):
+        return "comps", 3
+    if kind in ("first", "last", "new", "random", "comps"):
         return kind, val
     if len(val) == 1:
         a, b, step = val[0]
@@ -522,7 +567,12 @@ def pick_defaults(spec):
 
 def ask_pick(spec):
     mode, n_default = pick_defaults(spec)
+    saved_mode = mode
     mode = mc.ask_choice("5. Which ones from that ordered list? (position 1 = first in the order above)", PICKS, mode)
+    if mode == "comps":
+        n = mc.ask_int("   how many compilations (clips already waiting in the folder are counted)",
+                       n_default if saved_mode == "comps" else 3, 1, 1000)
+        return f"comps:{n}"
     if mode in ("first", "new", "last", "random"):
         n = mc.ask_int("   how many", n_default, 1, 100000)
         return str(n) if mode == "first" else f"{mode}:{n}"
@@ -570,6 +620,8 @@ def main():
     ap.add_argument("--sort", choices=[k for k, _ in SORTS])
     ap.add_argument("--pick", metavar="WHICH", help="e.g. 60, 25-70, last:20, every:5, new:60, 1-10,25")
     ap.add_argument("--top", type=int, metavar="N", help="same as --pick new:N")
+    ap.add_argument("--compilations", "-n", type=int, metavar="N",
+                    help="same as --pick comps:N - download just enough new videos to make N full compilations")
     ap.add_argument("--from", dest="date_from", metavar="DATE")
     ap.add_argument("--to", dest="date_to", metavar="DATE")
     ap.add_argument("--min-views", type=int, metavar="N")
@@ -593,8 +645,10 @@ def main():
     ap.add_argument("--cookies", metavar="FILE")
     args = ap.parse_args()
 
-    if args.pick and args.top:
-        sys.exit("Error: use either --pick or --top, not both")
+    if sum(bool(x) for x in (args.pick, args.top, args.compilations)) > 1:
+        sys.exit("Error: use only one of --pick, --top and --compilations")
+    if args.compilations is not None and args.compilations < 1:
+        sys.exit("Error: --compilations must be at least 1")
     if args.reverse and args.reverse_each:
         sys.exit("Error: use either --reverse or --reverse-each, not both")
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
@@ -602,7 +656,8 @@ def main():
     if not MAKE.is_file():
         sys.exit(f"Error: make_compilations.py must be in the same folder as this script ({HERE})")
 
-    flag_pick = args.pick or (f"new:{args.top}" if args.top else None)
+    flag_pick = args.pick or (f"new:{args.top}" if args.top else None) \
+        or (f"comps:{args.compilations}" if args.compilations else None)
     flag_play = "reverse" if args.reverse else "each" if args.reverse_each else None
     limit_flags = ("min_views", "min_minutes", "max_minutes", "max_height", "dest")
 
@@ -656,6 +711,16 @@ def main():
     dest = Path(s["dest"])
     archive = mc.load_json(ARCHIVE_FILE, {})
     downloaded = {} if args.redownload else archive
+
+    # ---- one-time look-and-feel setup for the compilations. Asked before anything is downloaded and before
+    # the plan, because "N compilations" needs to know how big one is.
+    if not args.no_compile and not args.dry_run and not COMPILE_SETTINGS.exists():
+        print("\nFirst time: a short one-time setup for how the compilations should look.")
+        mc.wizard({**mc.DEFAULTS}, ask_folder=False)
+        cfg = compile_config()
+        if not cfg["clips_dir"]:                          # so a later `python make_compilations.py` finds these clips
+            cfg["clips_dir"] = str(dest.resolve())
+            mc.save_json(COMPILE_SETTINGS, cfg)
 
     # ---- read the channel
     base_url = ChannelTable.base_channel_url(s["channel"])
@@ -730,29 +795,59 @@ def main():
             for r in [r for r in ranked if r["id"] in dup_ids][:5]:
                 print(f"      look-alike: {r['title']}")
 
-    picked = apply_pick(ranked, s["pick"], skip)
+    kind, val = parse_pick(s["pick"])
+    cfg = compile_config()
+    waiting, per, comps_text = 0, None, ""
+    if kind == "comps":
+        per, exact = clips_per_compilation(cfg, ranked)
+        waiting = len(waiting_clips(dest, cfg))
+        need = compilations_to_videos(val, per, waiting)
+        eff_pick = f"new:{need}" if need else None
+        comps_text = ("" if exact else "about ") + mc.plural(per, "clip")
+    else:
+        eff_pick = s["pick"]
     what = describe_pick(s["pick"])
-    if not picked:
-        if parse_pick(s["pick"])[0] == "new":
-            sys.exit("Nothing new: every video in that list has already been downloaded"
-                     + (" or looks like a re-upload" if dup_ids else "") + "." + range_note)
-        sys.exit(f"Your pick ({what}) doesn't match anything - the list only has {len(ranked)} videos."
-                 + range_note)
+    picked = apply_pick(ranked, eff_pick, skip) if eff_pick else []
+
+    if kind != "comps":
+        if not picked:
+            if kind == "new":
+                sys.exit("Nothing new: every video in that list has already been downloaded"
+                         + (" or looks like a re-upload" if dup_ids else "") + "." + range_note)
+            sys.exit(f"Your pick ({what}) doesn't match anything - the list only has {len(ranked)} videos."
+                     + range_note)
     new_picked = [(p, r) for p, r in picked if r["id"] not in skip]
     already = sum(1 for _, r in picked if r["id"] in downloaded)
     lookalikes = len(picked) - len(new_picked) - already
-    if not new_picked:
+    if kind != "comps" and not new_picked:
         sys.exit(f"All {len(picked)} videos in that selection ({what}) were downloaded in an earlier run"
                  + (" or look like re-uploads" if lookalikes else "") + ".\n"
                  "To get the next batch, pick different positions (e.g. 61-120) or use new:N." + range_note)
+    if kind == "comps" and not new_picked and waiting < 2:
+        sys.exit("Nothing to do: no new videos are available in that list"
+                 + (" or they all look like re-uploads" if dup_ids else "") + f" and only {mc.plural(waiting, 'clip')} waiting."
+                 + range_note)
 
     known = [r["duration"] for _, r in new_picked if r.get("duration")]
     length = f", about {mc.fmt_duration(sum(known))} of video" if known else ""
-    print(f"\nPlan: order by {SORT_WORDS[s['sort']]}, take {what} of the {len(ranked)} in that list")
-    print(f"      = {mc.plural(len(picked), 'video')}"
-          + (f", {already} already downloaded earlier (skipped)" if already else "")
-          + (f", {lookalikes} look like re-uploads (skipped)" if lookalikes else "")
-          + f" -> downloading {len(new_picked)}{length}.")
+    if kind == "comps":
+        print(f"\nPlan: make {mc.plural(val, 'compilation')} of {comps_text} each = {val * per} clips; "
+              f"order by {SORT_WORDS[s['sort']]} from the {len(ranked)} videos in that list.")
+        have = f"{mc.plural(waiting, 'clip')} already waiting in {dest.name}/" if waiting else "no clips waiting yet"
+        if eff_pick is None:
+            print(f"      {have} - already enough, nothing to download.")
+        else:
+            print(f"      {have}, so downloading {len(new_picked)} new{length}.")
+            if len(new_picked) < eff_need(eff_pick):
+                full = (waiting + len(new_picked)) // per
+                print(f"      Only {len(new_picked)} new videos are available in that list, which makes "
+                      f"{mc.plural(full, 'full compilation')} at most." + range_note.replace("\n", " ").rstrip())
+    else:
+        print(f"\nPlan: order by {SORT_WORDS[s['sort']]}, take {what} of the {len(ranked)} in that list")
+        print(f"      = {mc.plural(len(picked), 'video')}"
+              + (f", {already} already downloaded earlier (skipped)" if already else "")
+              + (f", {lookalikes} look like re-uploads (skipped)" if lookalikes else "")
+              + f" -> downloading {len(new_picked)}{length}.")
     if s["play"] != "asis":
         print("      Compilations will be built " + ("in reverse order." if s["play"] == "reverse"
                                                       else "with each one played backwards."))
@@ -768,14 +863,9 @@ def main():
         if mc.ask_text("Start? (y/n)", "y").lower().startswith("n"):
             return
 
-    # ---- one-time look-and-feel setup for the compilations, asked up front rather than mid-way
-    if not args.no_compile and not COMPILE_SETTINGS.exists():
-        print("\nFirst time: a short one-time setup for how the compilations should look.")
-        mc.wizard({**mc.DEFAULTS}, ask_folder=False)
-
     # ---- queue: exactly the picked positions. Only "new:N" fills a failed download with the next one in line.
     queue = list(new_picked)
-    if parse_pick(s["pick"])[0] == "new":
+    if kind in ("new", "comps") and new_picked:
         used_ids = {r["id"] for _, r in new_picked}
         queue += [(i + 1, r) for i, r in enumerate(ranked) if r["id"] not in skip and r["id"] not in used_ids]
     target = len(new_picked)
@@ -786,26 +876,27 @@ def main():
     started = time.time()
     try:
         files, failed, _ = download_batch(queue, target, dest, stamp, 1, s["max_height"], cookies_opts,
-                                          archive, s["channel"])
+                                          archive, s["channel"]) if target else ([], [], 1)
     except KeyboardInterrupt:
         clean_partials(dest, stamp)
         print("\n\nStopped. Clips downloaded so far are kept. To turn them into compilations later, run:")
         print(f"   python make_compilations.py all --clips \"{dest}\" --order name")
         return
 
-    print(f"\nDownloaded {mc.plural(len(files), 'video')} in {mc.fmt_duration(time.time() - started)}"
-          + (f" (positions {', '.join('#' + str(p) for p in failed)} could not be downloaded)." if failed else "."))
+    if target:
+        print(f"\nDownloaded {mc.plural(len(files), 'video')} in {mc.fmt_duration(time.time() - started)}"
+              + (f" (positions {', '.join('#' + str(p) for p in failed)} could not be downloaded)." if failed else "."))
     if failed:
         print("  If many fail, update yt-dlp first:  pip install -U yt-dlp")
     if args.no_compile:
         print(f"Saved in: {dest}")
         return
-    if not files:
+    if not files and kind != "comps":
         return                          # nothing new arrived (compilations only start from new downloads)
 
     # ---- compile: everything unused in the folder (new clips plus any leftovers), in name order
     print("\nMaking compilations...")
-    rc, made = compile_now(dest, s["play"], "all", args.include_leftover)
+    rc, made = compile_now(dest, s["play"], val if kind == "comps" else "all", args.include_leftover)
 
     if s["delete_after"] and rc == 0:
         removed = delete_used_clips(dest, archive)
