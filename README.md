@@ -8,7 +8,7 @@ A collection of command-line tools for YouTube: research channels and trends, do
 |---|---|---|
 | [`auto_compile.py`](auto_compile.py) | **Master script.** Picks videos from a channel (by date, length, views, sort order and a flexible `--pick` syntax), downloads them, then builds compilations. Remembers your answers and what you've already downloaded. | `yt_toolkit.py`, `make_compilations.py`, `stitch_videos.py` |
 | [`make_compilations.py`](make_compilations.py) | Turns a folder of clips into finished compilation videos, hands-off. Keeps a ledger of which clips went into which video, so runs resume where they stopped and nothing is made twice. | `stitch_videos.py` |
-| [`stitch_videos.py`](stitch_videos.py) | The video joiner. Stitches many videos into one with ffmpeg `xfade` transitions, per-junction overrides, reordering, and "stinger" transition videos (including any video of your own, with chroma-keying). | ffmpeg 4.3+ |
+| [`stitch_videos.py`](stitch_videos.py) | The video joiner. Stitches many videos into one with ffmpeg `xfade` transitions (every clip plays in full: the transition gets its own time over the held last/first frame, never cutting into the footage), per-junction overrides, reordering, and "stinger" transition videos (including any video of your own, with chroma-keying). | ffmpeg 4.3+ |
 | [`make_transitions.py`](make_transitions.py) | Generates stinger transitions (transparent `.mov` plus a green-screen `.mp4`) from a colour palette. Output goes to a folder that `stitch_videos.py` can use. | Pillow, ffmpeg |
 | [`yt_toolkit.py`](yt_toolkit.py) | YouTube research toolkit: channel discovery, outlier detection, channel tables, live-stream extraction, tag extraction, niche report and clip finder. `auto_compile.py` imports `ChannelTable` and `build_cookies_opts` from it. | yt-dlp, optionally tabulate |
 
@@ -101,6 +101,7 @@ python stitch_videos.py clips/ --custom "2=circleopen:1.5, 4=cut"   # override s
 python stitch_videos.py clips/ --stinger-dir stingers -t stinger    # random stinger per junction
 python stitch_videos.py clips/ --dry-run                        # preview the plan and ffmpeg command
 python stitch_videos.py --list-transitions
+python stitch_videos.py clips/ --overlap                         # old style: transitions overlap and hide the clip ends (shorter result)
 ```
 
 `stitch_videos.py` can also use any video as a transition with `@file[|option=value]` (chroma key, cut point, audio on/off). See the script's header or `--help`.
