@@ -174,6 +174,14 @@ length) are flagged and skipped unless `--keep-duplicates`.
 Behaviour change to confirm: today `--pick 60` means "the first 60 positions, then skip the ones you have", which can
 download fewer than 60. `--clips 60` means 60 *new* clips (today's `new:60`); stable positions are `--range`.
 
+Details pinned down by reading the code:
+
+- `--clips N` means "download N more". Clips already waiting in the library are not counted against it. `-n N` is
+  different on purpose: it counts the waiting clips, so it downloads only what N full compilations still need.
+- Today `new:N` takes the first N videos you don't have and only *then* drops look-alike re-uploads, so it can come out
+  slightly short. `--clips N` should fill up to N *after* those are dropped, taking the next in line.
+- If the channel has fewer new videos than N, you get what exists and the plan says so.
+
 A selection has two forms: a **query** (channel + filters above) or an explicit **list of videos** (section 14).
 
 ## 9. Style
