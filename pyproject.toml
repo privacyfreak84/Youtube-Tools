@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ytt"
+version = "0.1.0"
+description = "Research YouTube and make compilations."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+ytt = "ytt.ui.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ytt*"]

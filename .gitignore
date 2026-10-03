@@ -15,3 +15,8 @@ compile_cache.json
 fetched/
 compilations/
 stingers/
+
+# Packaging
+*.egg-info/
+build/
+dist/
