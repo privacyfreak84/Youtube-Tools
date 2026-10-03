@@ -45,6 +45,19 @@ python auto_compile.py @Channel --from 2024-01-01 --to 2024-06-30 --sort popular
 
 Run `python auto_compile.py --help` or read the header of the script for the full list of `--sort` and `--pick` options.
 
+### Remaking a compilation with other settings (same videos)
+
+```bash
+python auto_compile.py --redo last --setup     # change the look first, then remake the last one from the SAME clips
+python auto_compile.py --redo 1,3              # remake compilations 1 and 3 with your current settings
+python auto_compile.py --redo all --replace    # remake every one and overwrite the old videos
+python auto_compile.py --redo 2 --reverse      # same clips, played in the opposite order
+```
+
+`--redo` takes a finished compilation's exact clips in their exact order and renders them again with whatever settings you have now (transitions, quality, intro/outro, how transition videos are shown). The old video is kept and a new numbered one is made, unless you add `--replace`. If the clips were deleted ("delete clips afterwards"), they are downloaded again under their original names first. A compilation whose clips can't all be fetched again (video removed or private) is skipped and the rest are still remade. The compiler has the same thing: `python make_compilations.py --redo last`.
+
+Settings that change *which* clips go together (clips per compilation, clip order) don't apply to a remake, since the clips are fixed. For that, use `python make_compilations.py --forget N` to free a compilation's clips and make new groups from them.
+
 ### Mass-producing compilations
 
 ```bash
