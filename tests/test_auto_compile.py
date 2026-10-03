@@ -612,5 +612,72 @@ class TransitionLookTests(WorldTest):
             self.assertEqual(len(self.made()), n, f"{key}: {out[-1500:]}")
 
 
+class RedoCompilerTests(WorldTest):
+    """make_compilations.py --redo: same clips, same order, current settings."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_ac(*self.base("--pick", "8"))                       # compilation_001 and compilation_002
+        self.assertEqual(self.made(), ["compilation_001", "compilation_002"])
+
+    def mc_run(self, *args):
+        p = subprocess.run([sys.executable, str(self.tmp / "make_compilations.py"), *args, "--clips", str(self.dest)],
+                           capture_output=True, text=True, cwd=self.tmp)
+        return p.stdout + p.stderr
+
+    def comps(self):
+        return self.state("compile_ledger.json")["compilations"]
+
+    def test_redo_makes_a_new_video_from_the_same_clips_in_the_same_order_and_keeps_the_old_one(self):
+        before = dict(self.comps())
+        out = self.mc_run("--redo", "last")
+        after = self.comps()
+        self.assertEqual(sorted(after), ["compilation_001", "compilation_002", "compilation_003"], out)
+        self.assertEqual(after["compilation_003"]["clips"], before["compilation_002"]["clips"])
+        self.assertEqual(after["compilation_002"], before["compilation_002"])          # old entry untouched
+        self.assertTrue((self.tmp / "compilations" / "compilation_003.mp4").is_file())
+        self.assertTrue((self.tmp / "compilations" / "compilation_002.mp4").is_file())
+
+    def test_replace_overwrites_the_old_video_instead_of_adding_one(self):
+        f = Path(self.comps()["compilation_001"]["file"])
+        old = f.stat().st_mtime_ns
+        out = self.mc_run("--redo", "1", "--replace")
+        self.assertEqual(sorted(self.comps()), ["compilation_001", "compilation_002"], out)
+        self.assertGreater(f.stat().st_mtime_ns, old)
+
+    def test_reverse_plays_the_same_clips_backwards(self):
+        first = self.comps()["compilation_001"]["clips"]
+        self.mc_run("--redo", "1", "--reverse")
+        self.assertEqual(self.comps()["compilation_003"]["clips"], first[::-1])
+
+    def test_all_and_lists_and_names(self):
+        self.mc_run("--redo", "all")
+        self.assertEqual(len(self.comps()), 4)
+        self.mc_run("--redo", "compilation_001,2")
+        self.assertEqual(len(self.comps()), 6)
+
+    def test_unknown_compilation_is_a_clear_error(self):
+        self.assertIn("No compilation matches '9'", self.mc_run("--redo", "9"))
+
+    def test_missing_clips_are_reported_not_guessed(self):
+        gone = self.comps()["compilation_001"]["clips"][0]
+        (self.dest / gone).unlink()
+        out = self.mc_run("--redo", "1")
+        self.assertIn("Can't remake compilation_001: 1 of its clip no longer in", out)
+        self.assertEqual(len(self.comps()), 2)
+
+    def test_dry_run_changes_nothing(self):
+        out = self.mc_run("--redo", "all", "--dry-run")
+        self.assertIn("compilation_001  (4 clips)  ->  compilation_003", out)
+        self.assertEqual(len(self.comps()), 2)
+
+    def test_replace_alone_is_an_error(self):
+        self.assertIn("--replace only works together with --redo", self.mc_run("--replace"))
+
+    def test_redo_uses_the_settings_as_they_are_now(self):
+        self.write_compile_settings(intro=str(self.tmp / "nope.mp4"))     # a missing intro must stop it like a normal run
+        self.assertIn("your intro video is missing", self.mc_run("--redo", "last"))
+
+
 if __name__ == "__main__":
     unittest.main()

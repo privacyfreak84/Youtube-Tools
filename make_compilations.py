@@ -21,6 +21,9 @@ OTHER COMMANDS (all optional)
   --dry-run          show what WOULD be made, without rendering anything
   --list             show the compilations made so far
   --forget 3         put compilation 3's clips back in the pool (e.g. you deleted that video)
+  --redo last        remake a finished compilation from the SAME clips in the SAME order with your current
+                     settings (try other transitions/quality). last | all | 3 | 1,3 ; the old video is kept
+                     unless you add --replace. Combine with --setup to change the settings first.
   --retry-bad        try unreadable/corrupt clips again
   --include-leftover also make a final shorter video from clips that don't fill a whole one
   --reverse          play the whole sequence backwards (last clip first)
@@ -417,6 +420,17 @@ def render(files, out_path, s, resolution_fps):
     return False
 
 
+def render_one(group, out_path, s, cache):
+    """Render one compilation from [(key, path), ...]. The output size/frame rate is whatever most of the
+    clips use (not the intro, not a random first clip). Returns True on success."""
+    intro = [Path(s["intro"])] if s["intro"] else []
+    outro = [Path(s["outro"])] if s["outro"] else []
+    infos = [clip_info(p, cache) for _, p in group]
+    size = Counter((i["w"], i["h"]) for i in infos).most_common(1)[0][0]
+    fps = Counter(str(i["fps"]) for i in infos).most_common(1)[0][0]
+    return render(intro + [p for _, p in group] + outro, out_path, s, (f"{size[0]}x{size[1]}", fps))
+
+
 # --------------------------------------------------------------------------- commands
 
 def cmd_list(ledger):
@@ -446,6 +460,93 @@ def cmd_forget(ledger, which):
     print("(the video file itself was not touched - delete it yourself if you don't want it)")
 
 
+def _num_key(name):
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", name)]
+
+
+def resolve_redo(ledger, spec):
+    """'last' | 'all' | '3' | 'compilation_003' | '1,3' -> names of finished compilations, oldest first."""
+    comps = ledger["compilations"]
+    if not comps:
+        sys.exit("Nothing has been made yet, so there is nothing to remake. (--list shows what exists)")
+    ordered = sorted(comps, key=_num_key)
+    chosen = []
+    for part in [p.strip() for p in str(spec).split(",") if p.strip()]:
+        if part.lower() == "all":
+            found = ordered
+        elif part.lower() == "last":
+            found = [ordered[-1]]
+        elif part in comps:
+            found = [part]
+        else:
+            found = [n for n in ordered if re.fullmatch(rf".*_0*{re.escape(part)}", n)][:1]
+        if not found:
+            sys.exit(f"No compilation matches '{part}'. Use --list to see them.")
+        chosen += [n for n in found if n not in chosen]
+    return sorted(chosen, key=_num_key)
+
+
+def cmd_redo(args, s, ledger, clips_dir, cache):
+    """Remake finished compilations from the same clips in the same order, with the current settings."""
+    names = resolve_redo(ledger, args.redo)
+    out_dir = Path(s["output_dir"])
+    plan = []
+    for name in names:
+        group = [(k, Path(clips_dir) / k) for k in ledger["compilations"][name]["clips"]]
+        gone = [k for k, p in group if not p.is_file()]
+        if gone:
+            sys.exit(f"Can't remake {name}: {plural(len(gone), 'of its clip')} no longer in {clips_dir}:\n   "
+                     + ", ".join(gone[:5]) + (" ..." if len(gone) > 5 else "")
+                     + "\n   (python auto_compile.py --redo ... downloads deleted clips again for you)")
+        if args.reverse or args.reverse_each:
+            group = group[::-1]
+        plan.append((name, group))
+
+    print(f"Remaking {plural(len(plan), 'compilation')} from the same clips"
+          + (" (played backwards)" if args.reverse or args.reverse_each else "")
+          + (", replacing the old video(s)." if args.replace else ". The old video(s) are kept."))
+    if args.dry_run:
+        n0 = next_number(ledger, out_dir, s["prefix"])
+        for i, (name, group) in enumerate(plan):
+            target = name if args.replace else "%s_%03d" % (s["prefix"], n0 + i)
+            print(f"  {name}  ({plural(len(group), 'clip')})  ->  {target}")
+        print("\n(dry run - nothing was rendered or saved)")
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    made, failed, started = [], [], time.time()
+    try:
+        for gi, (old, group) in enumerate(plan, 1):
+            if args.replace:
+                name = old
+                out_path = Path(ledger["compilations"][old].get("file") or out_dir / f"{old}.mp4")
+            else:
+                name = f"{s['prefix']}_{next_number(ledger, out_dir, s['prefix']):03d}"
+                out_path = out_dir / f"{name}.mp4"
+            print(f"\n[{gi}/{len(plan)}] {name}  ({plural(len(group), 'clip')}, same as {old})")
+            if render_one(group, out_path, s, cache):
+                keys = [k for k, _ in group]
+                ledger["compilations"][name] = {"clips": keys, "file": str(out_path),
+                                                "made": datetime.now().strftime("%Y-%m-%d %H:%M")}
+                save_json(LEDGER_FILE, ledger)
+                out_path.with_suffix(".txt").write_text("\n".join(keys) + "\n", encoding="utf-8")
+                made.append(name)
+                print("   done.")
+            else:
+                failed.append(old)
+                print(f"   FAILED: {old} was not remade (see the message above). The old one is untouched.")
+    except KeyboardInterrupt:
+        print("\n\nStopped. Everything finished so far is saved.")
+    finally:
+        save_json(CACHE_FILE, cache)
+    print("\n" + "-" * 50)
+    print(f"Remade {plural(len(made), 'compilation')} in {fmt_duration(time.time() - started)}.")
+    if made:
+        print(f"Find them in: {out_dir}")
+    if failed:
+        print(f"{len(failed)} failed: {', '.join(failed)}.")
+
+
 # --------------------------------------------------------------------------- main
 
 def main():
@@ -458,6 +559,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="show the plan without rendering anything")
     ap.add_argument("--list", action="store_true", help="show compilations made so far")
     ap.add_argument("--forget", metavar="N", help="free the clips of compilation N so they can be used again")
+    ap.add_argument("--redo", metavar="WHICH",
+                    help="remake finished compilation(s) from the same clips in the same order with your current "
+                         "settings: last, all, a number, or a list like 1,3")
+    ap.add_argument("--replace", action="store_true", help="with --redo: overwrite the old video instead of keeping it")
     ap.add_argument("--retry-bad", action="store_true", help="try previously unreadable clips again")
     ap.add_argument("--include-leftover", action="store_true",
                     help="also make a final shorter video from clips that don't fill a whole one")
@@ -482,6 +587,8 @@ def main():
     ledger.setdefault("compilations", {})
     ledger.setdefault("skipped", {})
 
+    if args.replace and not args.redo:
+        sys.exit("Error: --replace only works together with --redo")
     if args.list:
         return cmd_list(ledger)
     if args.forget:
@@ -510,6 +617,9 @@ def main():
 
     out_dir = Path(s["output_dir"])
     cache = load_json(CACHE_FILE, {})
+
+    if args.redo:
+        return cmd_redo(args, s, ledger, clips_dir, cache)
 
     # ---- what is new?
     all_clips = scan_clips(clips_dir, skip_dir=out_dir)
@@ -572,21 +682,13 @@ def main():
 
     # ---- render
     out_dir.mkdir(parents=True, exist_ok=True)
-    intro = [Path(s["intro"])] if s["intro"] else []
-    outro = [Path(s["outro"])] if s["outro"] else []
     made, failed, started = [], [], time.time()
     try:
         for gi, group in enumerate(groups, 1):
             name = f"{s['prefix']}_{next_number(ledger, out_dir, s['prefix']):03d}"
             out_path = out_dir / f"{name}.mp4"
             print(f"\n[{gi}/{len(groups)}] {name}  ({plural(len(group), 'clip')})")
-            # Output size/frame rate = whatever most of the clips use (not the intro, not a random first clip)
-            infos = [clip_info(p, cache) for _, p in group]
-            size = Counter((i["w"], i["h"]) for i in infos).most_common(1)[0][0]
-            fps = Counter(str(i["fps"]) for i in infos).most_common(1)[0][0]
-            res = (f"{size[0]}x{size[1]}", fps)
-            files = intro + [p for _, p in group] + outro
-            if render(files, out_path, s, res):
+            if render_one(group, out_path, s, cache):
                 keys = [k for k, _ in group]
                 ledger["compilations"][name] = {"clips": keys, "file": str(out_path),
                                                 "made": datetime.now().strftime("%Y-%m-%d %H:%M")}
