@@ -4,6 +4,10 @@ stitch_videos.py - join many videos into one compilation, with transitions.
 
 Requires: Python 3.8+ and ffmpeg/ffprobe (ffmpeg 4.3+ for the xfade filter) on PATH.
 
+Every clip plays in full. A transition gets its own time between two clips, played over the last frame of the
+clip before it and the first frame of the clip after it, so nothing is cut off: the result is one transition
+length longer per junction. (--overlap brings back the old behaviour, where transitions eat into the clips.)
+
 Examples
 --------
   # Everything in a folder (natural sort: clip2 before clip10), 1s fade between all
@@ -41,12 +45,14 @@ Examples
     fit=stretch|pad|crop   audio=on|off      (the video's own sound is mixed in at the cut)
   Files with real transparency (.mov from make_transitions.py) need no key. A plain video with no key plays
   on top of the cut as-is, so make its midpoint fully cover the screen, or set cover/cut to where it does.
+  The video plays over a held frame of each clip, so it never hides any of the clips' own footage.
 
   # Preview the plan without rendering
   python stitch_videos.py clips/ --custom "1=random" --dry-run
 """
 
 import argparse
+from fractions import Fraction
 import glob
 import json
 import random
@@ -390,7 +396,7 @@ def parse_custom(spec, n_junctions, default_dur):
     return overrides
 
 
-def plan_junctions(clips, default, default_dur, custom_spec, pick):
+def plan_junctions(clips, default, default_dur, custom_spec, pick, overlap=False):
     n = len(clips) - 1
     plan = [parse_transition(default, default_dur) for _ in range(n)]
     for i, tr in parse_custom(custom_spec or "", n, default_dur).items():
@@ -422,14 +428,14 @@ def plan_junctions(clips, default, default_dur, custom_spec, pick):
         if name in STINGERS:
             st = STINGERS[name]
             need_before, need_after = st.cover * st.duration, (1 - st.cover) * st.duration
-            if clips[i].duration < need_before or clips[i + 1].duration < need_after:
+            if overlap and (clips[i].duration < need_before or clips[i + 1].duration < need_after):
                 print(f"  note: junction {i + 1}: a clip is shorter than stinger '{name}' ({st.duration:.1f}s); it will overlap")
             final.append((name, st.duration))
             continue
         if name != "cut":
             # A transition can't be longer than the clips it overlaps; keep headroom for both ends of a clip.
             limit = 0.45 * min(clips[i].duration, clips[i + 1].duration)
-            if d > limit:
+            if overlap and d > limit:
                 print(f"  note: junction {i + 1} shortened {d:g}s -> {limit:.2f}s (clip too short)")
                 d = limit
             if d < 0.05:
@@ -442,7 +448,7 @@ def plan_junctions(clips, default, default_dur, custom_spec, pick):
 
 # --------------------------------------------------------------------------- ffmpeg graph
 
-def build_filter_graph(clips, junctions, width, height, fps, fit, with_audio):
+def build_filter_graph(clips, junctions, width, height, fps, fit, with_audio, overlap=False):
     g = []
     if fit == "crop":
         fit_f = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
@@ -461,23 +467,69 @@ def build_filter_graph(clips, junctions, width, height, fps, fit, with_audio):
             else:
                 g.append(f"anullsrc=r={SAMPLE_RATE}:cl=stereo:d={d},aformat=sample_fmts=fltp[a{i}]")
 
+    fpsf = float(Fraction(str(fps)))
     v_cur, a_cur, total = "v0", "a0", clips[0].duration
     stinger_uses = []      # (absolute cut time, Stinger) - overlaid after the main chain is built
     for i, (name, d) in enumerate(junctions, start=1):
         v_out, a_out = f"vx{i}", f"ax{i}"
-        if name in STINGERS:
-            stinger_uses.append((total, STINGERS[name]))
-        if name == "cut" or name in STINGERS:          # stingers sit on top of a hard cut
-            g.append(f"[{v_cur}][v{i}]concat=n=2:v=1:a=0,settb=AVTB[{v_out}]")
-            if with_audio:
-                g.append(f"[{a_cur}][a{i}]concat=n=2:v=0:a=1[{a_out}]")
-            total += clips[i].duration
+        is_stinger = name in STINGERS
+        if overlap:
+            # Legacy: the transition eats into the end of one clip and the start of the next.
+            if is_stinger:
+                stinger_uses.append((total, STINGERS[name]))
+            if name == "cut" or is_stinger:            # stingers sit on a hard cut
+                g.append(f"[{v_cur}][v{i}]concat=n=2:v=1:a=0,settb=AVTB[{v_out}]")
+                if with_audio:
+                    g.append(f"[{a_cur}][a{i}]concat=n=2:v=0:a=1[{a_out}]")
+                total += clips[i].duration
+            else:
+                g.append(f"[{v_cur}][v{i}]xfade=transition={name}:duration={d:.3f}:offset={total - d:.3f},"
+                         f"settb=AVTB[{v_out}]")
+                if with_audio:
+                    g.append(f"[{a_cur}][a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri[{a_out}]")
+                total += clips[i].duration - d
+            v_cur, a_cur = v_out, a_out
+            continue
+
+        # Default: nothing is lost. The transition gets its own time, played over the last frame of the
+        # clip before it and the first frame of the clip after it, so both clips play in full.
+        # Holds are whole frames, so picture and sound stay in step however many junctions there are.
+        if name == "cut":
+            na = nb = 0
+        elif is_stinger:                               # the video's cover point lands on the cut
+            st = STINGERS[name]
+            n = max(1, round(st.duration * fpsf))
+            na = round(st.cover * n)
+            nb = n - na                                # the two holds add up to exactly the video's length
         else:
-            g.append(f"[{v_cur}][v{i}]xfade=transition={name}:duration={d:.3f}:offset={total - d:.3f},"
+            na = nb = max(1, round(d * fpsf))
+        hold_a, hold_b = na / fpsf, nb / fpsf
+        d = hold_a                                     # crossfade length, frame-exact
+        if is_stinger:
+            stinger_uses.append((total + hold_a, STINGERS[name]))
+
+        v_tail, v_head = v_cur, f"v{i}"
+        if na:
+            # fps first: the previous junction's output has timestamps tpad can't pad reliably (a later clip vanished)
+            g.append(f"[{v_cur}]fps={fps},tpad=stop_mode=clone:stop={na},settb=AVTB[vt{i}]")
+            v_tail = f"vt{i}"
+        if nb:
+            g.append(f"[v{i}]tpad=start_mode=clone:start={nb},settb=AVTB[vh{i}]")
+            v_head = f"vh{i}"
+        if name == "cut" or is_stinger:                # stingers sit on top of a hard cut
+            g.append(f"[{v_tail}][{v_head}]concat=n=2:v=1:a=0,settb=AVTB[{v_out}]")
+        else:
+            g.append(f"[{v_tail}][{v_head}]xfade=transition={name}:duration={d:.3f}:offset={total:.3f},"
                      f"settb=AVTB[{v_out}]")
-            if with_audio:
-                g.append(f"[{a_cur}][a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri[{a_out}]")
-            total += clips[i].duration - d
+
+        if with_audio:
+            gap = (hold_a + hold_b) if (name == "cut" or is_stinger) else d
+            if gap > 0.001:                            # a beat of silence while the picture transitions
+                g.append(f"anullsrc=r={SAMPLE_RATE}:cl=stereo:d={gap:.3f},aformat=sample_fmts=fltp[ag{i}]")
+                g.append(f"[{a_cur}][ag{i}][a{i}]concat=n=3:v=0:a=1[{a_out}]")
+            else:
+                g.append(f"[{a_cur}][a{i}]concat=n=2:v=0:a=1[{a_out}]")
+        total += (hold_a + hold_b if (name == "cut" or is_stinger) else d) + clips[i].duration
         v_cur, a_cur = v_out, a_out
 
     extra_inputs = []
@@ -557,6 +609,9 @@ def main():
     ap.add_argument("inputs", nargs="*", help="video files, folders, or wildcards")
     ap.add_argument("-o", "--output", default="compilation.mp4")
     ap.add_argument("-t", "--transition", default="fade", help="default transition (or 'cut'/'random'). Default: fade")
+    ap.add_argument("--overlap", action="store_true",
+                    help="old behaviour: transitions eat into the end of one clip and the start of the next "
+                         "(shorter result, but clip content is hidden). Default: every clip plays in full")
     ap.add_argument("-d", "--duration", type=float, default=1.0, help="default transition length in seconds. Default: 1.0")
     ap.add_argument("--stinger-dir", metavar="DIR", help="folder of transition videos (from make_transitions.py, or your own)")
     ap.add_argument("--key", default="auto", metavar="COLOR",
@@ -623,7 +678,8 @@ def main():
 
     # ---- transitions
     try:
-        junctions = plan_junctions(clips, args.transition, args.duration, args.custom, args.pick_transitions)
+        junctions = plan_junctions(clips, args.transition, args.duration, args.custom, args.pick_transitions,
+                                   overlap=args.overlap)
     except ValueError as e:
         sys.exit(f"Error: {e}")
 
@@ -633,7 +689,8 @@ def main():
     fps = args.fps or clips[0].fps
     with_audio = not args.no_audio
 
-    graph, v_label, a_label, total, extra = build_filter_graph(clips, junctions, width, height, fps, args.fit, with_audio)
+    graph, v_label, a_label, total, extra = build_filter_graph(clips, junctions, width, height, fps, args.fit, with_audio,
+                                                                   overlap=args.overlap)
 
     print(f"\nFinal plan  ({width}x{height}, fps {fps}, ~{fmt_time(total)} total)")
     for i, c in enumerate(clips):
