@@ -679,5 +679,91 @@ class RedoCompilerTests(WorldTest):
         self.assertIn("your intro video is missing", self.mc_run("--redo", "last"))
 
 
+class RedoViaAutoCompileTests(WorldTest):
+    def setUp(self):
+        super().setUp()
+        self.run_ac(*self.base("--pick", "8"))                          # compilation_001 and compilation_002
+        self.first = self.state("compile_ledger.json")["compilations"]["compilation_001"]["clips"]
+        self.downloads.clear()
+
+    def comps(self):
+        return self.state("compile_ledger.json")["compilations"]
+
+    def test_redo_remakes_the_same_clips_and_says_how_it_will_look(self):
+        out = self.run_ac("--redo", "last", "--yes")
+        self.assertIn("Remaking compilation_002 with: hard cuts, fast quality", out)    # no size: the clips are fixed
+        self.assertEqual(sorted(self.comps()), ["compilation_001", "compilation_002", "compilation_003"], out)
+        self.assertEqual(self.downloads, [])                            # nothing was missing, nothing downloaded
+        self.assertIn("python auto_compile.py --redo last --setup", out)
+
+    def test_redo_with_setup_changes_the_look_first(self):
+        out = self.run_ac("--redo", "1", "--setup", "--yes", inputs=["", "", "", "", "", "", "", "2"])
+        self.assertEqual(self.state("compile_settings.json")["quality"], "balanced")
+        self.assertIn("balanced quality", out)
+        self.assertEqual(self.comps()["compilation_003"]["clips"], self.first)
+
+    def test_replace_and_reverse_are_passed_on(self):
+        self.run_ac("--redo", "1", "--replace", "--reverse", "--yes")
+        self.assertEqual(sorted(self.comps()), ["compilation_001", "compilation_002"])
+        self.assertEqual(self.comps()["compilation_001"]["clips"], self.first[::-1])
+
+    def test_deleted_clips_are_downloaded_again_under_their_original_names(self):
+        for k in self.first:                                            # what --delete-after would have done
+            (self.dest / k).unlink()
+        out = self.run_ac("--redo", "1", "--yes")
+        self.assertIn("4 clips of these compilations are no longer in fetched/", out)
+        self.assertEqual(sorted(self.downloads), sorted(k.rsplit("_", 1)[-1][:-4] for k in self.first))
+        self.assertTrue(all((self.dest / k).is_file() for k in self.first))     # same names as before
+        self.assertEqual(self.comps()["compilation_003"]["clips"], self.first)
+
+    def test_restored_clips_are_deleted_again_when_delete_after_is_on(self):
+        settings = self.state("auto_settings.json")
+        settings["delete_after"] = True
+        (self.tmp / "auto_settings.json").write_text(json.dumps(settings))
+        for k in self.first:
+            (self.dest / k).unlink()
+        out = self.run_ac("--redo", "1", "--yes")
+        self.assertEqual(len(self.comps()), 3, out)
+        self.assertFalse(any((self.dest / k).exists() for k in self.first))
+        self.assertIn("Deleted the 4 clips downloaded again", out)
+
+    def test_by_hand_you_are_asked_before_anything_is_downloaded(self):
+        for k in self.first:
+            (self.dest / k).unlink()
+        out = self.run_ac("--redo", "1", inputs=["n"], tty=True)
+        self.assertIn("Stopped - nothing was changed.", out)
+        self.assertEqual(self.downloads, [])
+        self.assertEqual(len(self.comps()), 2)
+
+    def test_a_clip_that_cannot_be_downloaded_again_skips_only_that_compilation(self):
+        (self.dest / self.first[0]).unlink()
+        self.fail_ids = {self.first[0].rsplit("_", 1)[-1][:-4]}
+        out = self.run_ac("--redo", "all", "--yes")
+        self.assertIn("1 clip could not be downloaded again", out)
+        self.assertIn("Remaking compilation_002 with", out)
+        self.assertNotIn("Remaking compilation_001", out)
+        self.assertEqual(sorted(self.comps()), ["compilation_001", "compilation_002", "compilation_003"])
+
+    def test_nothing_can_be_remade_says_so(self):
+        for k in self.first:
+            (self.dest / k).unlink()
+        self.fail_ids = {k.rsplit("_", 1)[-1][:-4] for k in self.first}
+        self.assertIn("Nothing could be remade.", self.run_ac("--redo", "1", "--yes"))
+
+    def test_guard_rails(self):
+        self.assertIn("leave the channel out", self.run_ac("--redo", "1", "@Chan"))
+        self.assertIn("--replace only works together with --redo", self.run_ac("--replace", "--yes"))
+        self.assertIn("No compilation matches '9'", self.run_ac("--redo", "9", "--yes"))
+
+    def test_redo_before_anything_was_made_is_a_clear_message(self):
+        (self.tmp / "compile_ledger.json").unlink()
+        self.assertIn("Nothing has been made yet", self.run_ac("--redo", "last", "--yes"))
+
+    def test_dry_run_changes_nothing(self):
+        out = self.run_ac("--redo", "all", "--dry-run", "--yes")
+        self.assertIn("compilation_001  (4 clips)  ->  compilation_003", out)
+        self.assertEqual(len(self.comps()), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

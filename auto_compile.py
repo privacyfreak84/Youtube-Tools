@@ -19,6 +19,15 @@ HOW TO USE
   python auto_compile.py @Channel --sort oldest --pick 25-70 --reverse    same, but played newest-to-oldest
   python auto_compile.py @Channel --from 2024-01-01 --to 2024-06-30 --sort popular --pick new:60
 
+REMAKE WITH OTHER SETTINGS (same videos)
+----------------------------------------
+  python auto_compile.py --redo last --setup     change the look (transitions, quality, ...), then remake the
+                                                 last compilation from the SAME clips in the SAME order
+  python auto_compile.py --redo 1,3              remake compilations 1 and 3 with your current settings
+  python auto_compile.py --redo all --replace    remake every one and overwrite the old videos
+  The old video is kept (a new numbered one is made) unless you add --replace. If the clips were deleted
+  ("delete clips afterwards"), they are downloaded again under their original names first.
+
 MASS PRODUCTION (the fast way)
 ------------------------------
   python auto_compile.py @Channel --sort oldest --compilations 5     download just enough NEW videos for 5
@@ -90,7 +99,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
@@ -698,9 +707,11 @@ def print_summary(dest, cfg, made):
     if left:
         print(f"{mc.plural(left, 'clip')} waiting in {dest.name}/ for the next batch.")
     print("Next batch, no questions:   python auto_compile.py --again --yes")
+    if made:
+        print("Try other settings on the same clips:   python auto_compile.py --redo last --setup")
 
 
-def describe_compile(cfg):
+def describe_compile(cfg, with_size=True):
     """One line saying how the compilations will look, from the saved compilation setup."""
     size = (f"{cfg['clips_per_video']} clips each" if cfg["size_mode"] == "count"
             else f"about {cfg['minutes_per_video']} min each")
@@ -710,7 +721,7 @@ def describe_compile(cfg):
         key = str(cfg["stinger_key"])
         trans += {"auto": " (background auto-detected)", "none": " (shown as they are)"}.get(
             key, f" ({key} background removed)")
-    bits = [size, trans, f"{cfg['quality']} quality"]
+    bits = ([size] if with_size else []) + [trans, f"{cfg['quality']} quality"]
     if cfg["order"] != "name":
         bits.append(f"clips by {cfg['order']}")
     if cfg["intro"]:
@@ -731,6 +742,105 @@ def run_compile_setup(dest, first_time):
     if not cfg["clips_dir"]:                          # so a later `python make_compilations.py` finds these clips
         cfg["clips_dir"] = str(dest.resolve())
         mc.save_json(COMPILE_SETTINGS, cfg)
+
+
+def restore_clips(dest, keys, max_height, cookies_opts, workers):
+    """Download clips that were deleted (e.g. by --delete-after) again under their ORIGINAL file names, so
+    earlier compilations can be remade exactly. The video id is part of our file names.
+    Returns (restored keys, failed keys)."""
+    jobs, failed = [], []
+    for k in keys:
+        m = re.search(r"_([A-Za-z0-9_-]{11})\.[^.]+$", k)
+        if m and "/" not in k:
+            jobs.append((k, m.group(1)))
+        else:
+            failed.append(k)                           # not one of our names: no way to know which video it was
+    restored, stop = [], threading.Event()
+
+    def one(job):
+        k, vid = job
+        stem = Path(k).stem
+        download_one(f"https://www.youtube.com/watch?v={vid}", str(dest / (stem + ".%(ext)s")),
+                     max_height, cookies_opts, stop=stop, show_progress=False)
+        got = find_downloaded(dest, stem)
+        if got is None:
+            raise RuntimeError("finished but no file was found")
+        if got.name != k:
+            got.replace(dest / k)                      # same content, the extension the ledger remembers
+        return k
+
+    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    futures = {pool.submit(one, j): j for j in jobs}
+    try:
+        for n, fut in enumerate(as_completed(futures), 1):
+            k = futures[fut][0]
+            try:
+                fut.result()
+                restored.append(k)
+                print(f"[{n}/{len(jobs)}] downloaded again: {k}")
+            except Exception as e:
+                failed.append(k)
+                clean_partials(dest, Path(k).stem)
+                print(f"[{n}/{len(jobs)}] could not download {k} ({_why(e)})")
+    except KeyboardInterrupt:
+        stop.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+    return restored, failed
+
+
+def redo_mode(args, saved, workers):
+    """--redo: remake finished compilations from the same clips in the same order, with the current settings.
+    Clips that were deleted are downloaded again first."""
+    if args.channel or args.again:
+        sys.exit("Error: --redo remakes compilations you already made, so leave the channel out "
+                 "(and don't combine it with --again)")
+    dest = Path(mc.clean_path(args.dest) if args.dest else saved.get("dest") or DEFAULTS["dest"])
+    ledger = mc.load_json(COMPILE_LEDGER, {})
+    ledger.setdefault("compilations", {})
+    names = mc.resolve_redo(ledger, args.redo)
+    if args.setup:
+        run_compile_setup(dest, first_time=False)
+    cfg = compile_config()
+    keys = {n: ledger["compilations"][n]["clips"] for n in names}
+
+    missing = list(dict.fromkeys(k for n in names for k in keys[n] if not (dest / k).is_file()))
+    restored = []
+    if missing:
+        print(f"\n{mc.plural(len(missing), 'clip')} of these compilations are no longer in {dest.name}/ "
+              "(for example removed by 'delete clips afterwards').")
+        if is_tty() and not args.yes and not mc.ask_text("Download them again so they can be remade? (y/n)", "y") \
+                .lower().startswith("y"):
+            sys.exit("Stopped - nothing was changed.")
+        cookies_opts = build_cookies_opts(argparse.Namespace(
+            cookies_from_browser=args.cookies_from_browser, cookies=args.cookies))
+        max_height = args.max_height or saved.get("max_height") or DEFAULTS["max_height"]
+        try:
+            restored, failed = restore_clips(dest, missing, max_height, cookies_opts, workers)
+        except KeyboardInterrupt:
+            print("\n\nStopped.")
+            return
+        if failed:
+            names = [n for n in names if not set(keys[n]) & set(failed)]
+            print(f"  {mc.plural(len(failed), 'clip')} could not be downloaded again (video removed, private, or "
+                  "blocked), so the compilations that need them are skipped.")
+            if not names:
+                sys.exit("Nothing could be remade.")
+
+    print(f"\nRemaking {', '.join(names)} with: {describe_compile(cfg, with_size=False)}")
+    cmd = [sys.executable, str(MAKE), "--redo", ",".join(names), "--clips", str(dest)]
+    for flag, on in (("--replace", args.replace), ("--reverse", args.reverse),
+                     ("--reverse-each", args.reverse_each), ("--dry-run", args.dry_run)):
+        if on:
+            cmd.append(flag)
+    rc = subprocess.run(cmd).returncode
+    if rc == 0 and restored and saved.get("delete_after") and not args.dry_run:
+        for k in restored:                             # they were deleted on purpose last time
+            (dest / k).unlink(missing_ok=True)
+        print(f"Deleted the {mc.plural(len(restored), 'clip')} downloaded again (your 'delete clips afterwards' setting).")
+    if rc == 0 and not args.dry_run:
+        print("\nNot happy yet? Change settings and remake again:   python auto_compile.py --redo last --setup")
 
 
 # --------------------------------------------------------------------------- questions
@@ -826,6 +936,12 @@ def main():
     ap.add_argument("--no-compile", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--redo", metavar="WHICH",
+                    help="remake finished compilation(s) from the SAME clips in the same order with your current "
+                         "settings (last, all, a number, or a list like 1,3). Deleted clips are downloaded again. "
+                         "Add --setup to change the look first")
+    ap.add_argument("--replace", action="store_true",
+                    help="with --redo: overwrite the old video instead of keeping it and making a new one")
     ap.add_argument("--setup", action="store_true",
                     help="go through the compilation setup questions again (clips per compilation, transitions, "
                          "intro/outro, quality, ...)")
@@ -843,6 +959,8 @@ def main():
     ap.add_argument("--cookies", metavar="FILE")
     args = ap.parse_args()
 
+    if args.replace and not args.redo:
+        sys.exit("Error: --replace only works together with --redo")
     if args.again and args.channel:
         sys.exit("Error: --again repeats your last run, so leave the channel out")
     if sum(bool(x) for x in (args.pick, args.top, args.compilations)) > 1:
@@ -863,6 +981,8 @@ def main():
     limit_flags = ("min_views", "min_minutes", "max_minutes", "max_height", "dest")
 
     saved = mc.load_json(SETTINGS_FILE, {})
+    if args.redo:
+        return redo_mode(args, saved, workers)
     if "pick" not in saved and "top" in saved:                 # settings from the first version
         saved["pick"] = f"new:{saved['top']}"
     if args.channel:
