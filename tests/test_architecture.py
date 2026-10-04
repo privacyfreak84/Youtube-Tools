@@ -19,10 +19,10 @@ RULES = {
     "ytt.sources":        [],                                   # yt-dlp access: imports nothing from the rest
     "ytt.workspace":      [],                                   # database, config, paths
     "ytt.ops.research":   ["ytt.sources", "ytt.workspace.paths"],
-    "ytt.ops.compile":    ["ytt.sources", "ytt.workspace", "ytt.engine"],
-    "ytt.ops.library":    ["ytt.sources", "ytt.workspace", "ytt.engine", "ytt.ops.compile"],
+    "ytt.ops.compile":    ["ytt.sources", "ytt.workspace", "ytt.engine", "ytt.ops.plan", "ytt.ops.errors"],
+    "ytt.ops.library":    ["ytt.sources", "ytt.workspace", "ytt.engine", "ytt.ops.compile", "ytt.ops.plan", "ytt.ops.errors"],
     "ytt.ops.legacy_import": ["ytt.workspace", "ytt.ops.compile.style"],
-    "ytt.ops":            [],                                   # the ops package itself
+    "ytt.ops":            [],                                   # the ops package itself (plan, errors): pure data
     "ytt.ui":             ["ytt"],                              # may use anything below (checked separately)
 }
 UI_ONLY_IMPORTS = {"argparse", "rich", "questionary", "prompt_toolkit"}

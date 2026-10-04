@@ -63,6 +63,19 @@ MIGRATIONS = [
         PRIMARY KEY (compilation_id, position)
     );
     """,
+    # ---- version 2: runs. Every action command records what actually happened (DESIGN.md section 13).
+    """
+    CREATE TABLE runs (
+        id        INTEGER PRIMARY KEY,
+        kind      TEXT NOT NULL,                -- remake, make, fetch, ...
+        status    TEXT NOT NULL CHECK (status IN ('planned', 'running', 'completed', 'partial', 'failed', 'cancelled')),
+        request   TEXT,                         -- JSON: what was asked
+        plan      TEXT,                         -- JSON: what the plan said would happen
+        items     TEXT,                         -- JSON: one outcome per download/render
+        started   TEXT NOT NULL,
+        finished  TEXT
+    );
+    """,
 ]
 LATEST = len(MIGRATIONS)
 
