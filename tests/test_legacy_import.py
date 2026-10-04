@@ -86,7 +86,7 @@ class ImportTest(unittest.TestCase):
 
 class BasicImportTests(ImportTest):
     def test_videos_clips_sources_and_compilation_come_across_with_order_kept(self):
-        files = self.basic_state()
+        self.basic_state()
         r = import_legacy(self.ws, self.old.root)
         self.assertEqual(r.added, {"sources": 1, "videos": 3, "clips": 3, "compilations": 1, "styles": 1})
         self.assertEqual((r.clips_ready, r.clips_missing), (3, 0))

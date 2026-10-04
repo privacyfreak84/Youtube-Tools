@@ -8,9 +8,7 @@ import unittest
 from pathlib import Path
 
 from ytt.ui.cli import main
-from ytt.workspace import config as cfgmod
 from ytt.workspace import store
-from ytt.workspace.errors import WorkspaceError
 from ytt.workspace.workspace import Workspace
 
 
