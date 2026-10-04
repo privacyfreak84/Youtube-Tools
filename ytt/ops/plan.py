@@ -42,6 +42,7 @@ class RunResult:
     status: str                    # completed | partial | failed | cancelled
     items: list = field(default_factory=list)
     made: list = field(default_factory=list)       # names of compilations that now exist because of this run
+    counts: dict = field(default_factory=dict)     # e.g. {"downloaded": 12, "adopted": 3, "failed": 1} for a fetch
 
     def summary_status(self):
         done = sum(1 for i in self.items if i.status == "completed")
