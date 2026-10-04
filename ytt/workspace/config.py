@@ -79,3 +79,42 @@ def save(path, cfg):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(dumps(cfg))
     os.replace(tmp, path)                  # atomic: a crash cannot leave a half-written settings file
+
+
+_TRUE = {"true", "yes", "on", "1"}
+_FALSE = {"false", "no", "off", "0"}
+
+
+def set_value(cfg, key, text):
+    """Set one setting from text typed by the user ("workers", "8" / "make.clips_each", "20"), converting to the
+    type of the built-in default. Raises WorkspaceError for an unknown key or a value of the wrong kind."""
+    table, _, name = key.rpartition(".")
+    target, defaults = cfg, DEFAULTS
+    if table:
+        if table not in DEFAULTS or not isinstance(DEFAULTS[table], dict):
+            raise WorkspaceError(f"Unknown setting '{key}'. See `ytt workspace show` for the settings there are.")
+        target, defaults = cfg[table], DEFAULTS[table]
+    if name not in defaults or isinstance(defaults[name], dict):
+        raise WorkspaceError(f"Unknown setting '{key}'. See `ytt workspace show` for the settings there are.")
+    default = defaults[name]
+    try:
+        if isinstance(default, bool):
+            low = text.strip().lower()
+            if low not in _TRUE | _FALSE:
+                raise ValueError
+            value = low in _TRUE
+        elif isinstance(default, int):
+            value = int(text)
+            if value < 0:
+                raise ValueError
+        elif isinstance(default, float):
+            value = float(text)
+        elif isinstance(default, list):
+            value = [x.strip() for x in text.split(",") if x.strip()]
+        else:
+            value = text
+    except ValueError:
+        kind = {bool: "yes or no", int: "a whole number, 0 or more", float: "a number", list: "a comma-separated list"}
+        raise WorkspaceError(f"'{key}' needs {kind.get(type(default), 'text')} (got {text!r}).")
+    target[name] = value
+    return value
