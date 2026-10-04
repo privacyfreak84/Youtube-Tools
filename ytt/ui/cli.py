@@ -1,5 +1,6 @@
 """Command line entry point. The only layer that prints or prompts."""
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -7,7 +8,10 @@ import tempfile
 from pathlib import Path
 
 from ytt import __version__
+from ytt.ops.compile import remake as remake_mod
 from ytt.ops.compile import style as style_mod
+from ytt.ops.errors import OpError
+from ytt.ops.library import views
 from ytt.ops.legacy_import import import_legacy
 from ytt.workspace import config as cfgmod
 from ytt.workspace import paths
@@ -34,10 +38,64 @@ def build_parser():
                                      "Nothing in OLD_FOLDER is changed. Safe to run more than once.")
     im.add_argument("old_folder", metavar="OLD_FOLDER", help="the folder the old scripts ran in")
     im.add_argument("--dry-run", action="store_true", help="show what would be imported, change nothing")
+
+    rm = sub.add_parser("remake", help="render finished compilations again, with changes",
+                        description="Render recorded compilations again from the same clips in the same order. "
+                                    "TARGETS: last, all, a number (3), a name (compilation_003) or a list (1,3).")
+    rm.add_argument("targets", metavar="TARGETS", help="which compilations")
+    rm.add_argument("--style", metavar="NAME", help="use this saved style (default: the one it was made with)")
+    rm.add_argument("--order", choices=remake_mod.ORDERS, default="recorded",
+                    help="recorded (as before) or reversed (played backwards)")
+    rm.add_argument("--replace", action="store_true", help="overwrite the old video instead of making a new compilation")
+    rm.add_argument("--dry-run", action="store_true", help="show the plan, do nothing")
+    rm.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
+
+    lib = sub.add_parser("library", help="what you have: clips, compilations, sources",
+                         description="Look at what is in the library. With no argument: a summary.")
+    lsub = lib.add_subparsers(dest="what")
+    lsub.add_parser("stats", help="a summary (the default)")
+    lc = lsub.add_parser("clips", help="the clips you have")
+    lc.add_argument("--status", choices=("ready", "missing", "failed"))
+    lc.add_argument("--unused", action="store_true", help="only ready clips no compilation has used")
+    lsub.add_parser("compilations", help="finished compilations")
+    lsub.add_parser("sources", help="channels you have fetched from")
+    lr = lsub.add_parser("runs", help="what recent actions did")
+    lr.add_argument("--limit", type=int, default=10)
+    for sp in (lib, *lsub.choices.values()):
+        sp.add_argument("--json", action="store_true", help="machine-readable output")
     return ap
 
 
 # ---------------------------------------------------------------- showing things
+def is_tty():
+    return sys.stdin.isatty()
+
+
+def _table(rows, headers):
+    cells = [[str(c) for c in r] for r in rows]
+    widths = [max(len(h), *(len(r[i]) for r in cells)) if cells else len(h) for i, h in enumerate(headers)]
+    line = lambda r: "  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip()
+    return "\n".join([line(headers), line(["-" * w for w in widths]), *[line(r) for r in cells]])
+
+
+def _gb(n):
+    return f"{n / 1e9:.1f} GB"
+
+
+def _dur(seconds):
+    if seconds is None:
+        return "-"
+    m, s = divmod(int(round(seconds)), 60)
+    return f"{m}:{s:02d}"
+
+
+def render_plan(plan):
+    out = [plan.title]
+    out += [f"  {a.text}" for a in plan.actions]
+    for label, items in (("Errors", plan.errors), ("Warnings", plan.warnings), ("Notes", plan.notes)):
+        if items:
+            out += ["", label] + [f"  - {i}" for i in items]
+    return "\n".join(out)
 def _plural(n, word):
     return f"{n} {word}" + ("" if n == 1 else "s")
 
@@ -146,6 +204,94 @@ def cmd_import(args, root):
     return 0
 
 
+def _confirm(args):
+    """Ask before doing anything. --yes skips it; a script (no terminal) must say --yes."""
+    if args.yes:
+        return True
+    if not is_tty():
+        raise OpError("This needs a yes and there is no terminal to ask. Add --yes to go ahead.")
+    answer = input("\nProceed? [Y/n] ").strip().lower()
+    return answer in ("", "y", "yes")
+
+
+def cmd_remake(args, root):
+    with Workspace.open(root) as ws:
+        rp = remake_mod.plan_remake(ws, remake_mod.RemakeRequest(args.targets, args.style, args.order, args.replace))
+        print(render_plan(rp.plan))
+        if not rp.plan.ok:
+            return 1
+        if args.dry_run:
+            print("\n(dry run: nothing was done)")
+            return 0
+        if not _confirm(args):
+            print("Cancelled; nothing was done.")
+            return 0
+        shown = {}
+
+        def progress(name, done, total):
+            pct = min(100, int(done * 100 / total)) if total else 0
+            if sys.stdout.isatty():
+                print(f"\r  {name}: {pct}%", end="", flush=True)
+            elif pct // 25 > shown.get(name, -1):
+                shown[name] = pct // 25
+                print(f"  {name}: {pct}%", flush=True)
+
+        print()
+        result = remake_mod.run_remake(ws, rp, on_progress=progress)
+        if sys.stdout.isatty():
+            print()
+        for item in result.items:
+            if item.status == "completed":
+                print(f"  made {item.what}")
+            else:
+                print(f"  {item.status.upper()} {item.what}" + (f": {item.detail}" if item.detail else ""))
+        print(f"\n{result.status.capitalize()}: {_plural(len(result.made), 'compilation')} made (run {result.run_id}).")
+        return {"completed": 0, "cancelled": 130}.get(result.status, 1)
+
+
+def cmd_library(args, root):
+    what = args.what or "stats"
+    with Workspace.open(root) as ws:
+        if what == "stats":
+            data = views.stats(ws)
+            if args.json:
+                print(json.dumps(data, indent=2))
+                return 0
+            print(f"Library   {_plural(data['clips'], 'clip')} ({data['ready']} ready, {data['missing']} missing"
+                  + (f", {data['failed']} failed" if data["failed"] else "")
+                  + f") · {_plural(data['compilations'], 'compilation')} · {_plural(data['sources'], 'source')}")
+            print(f"  ready clips   {data['used']} used by compilations · {data['unused']} unused")
+            print(f"  storage       clips {_gb(data['clips_bytes'])} · compilations {_gb(data['compilations_bytes'])}")
+            if data["compilations_missing_file"]:
+                print(f"  {_plural(data['compilations_missing_file'], 'compilation')} no longer have their video file")
+            return 0
+        if what == "clips":
+            data = views.clips(ws, status=args.status, unused=args.unused)
+            headers, rows = ["id", "youtube id", "status", "used", "length", "views", "title"], \
+                [[c["id"], c["youtube_id"], c["status"], "yes" if c["used"] else "no", _dur(c["duration"]),
+                  c["views"] if c["views"] is not None else "-", (c["title"] or "")[:50]] for c in data]
+        elif what == "compilations":
+            data = views.compilations(ws)
+            headers, rows = ["name", "clips", "made", "style", "from", "file"], \
+                [[c["name"], c["clips"], c["made"] or "-", "recorded" if c["style_recorded"] else "unknown",
+                  c["parent"] or "-", "ok" if c["output_exists"] else ("gone" if c["output"] else "-")] for c in data]
+        elif what == "sources":
+            data = views.sources(ws)
+            headers, rows = ["source", "videos known", "clips"], [[c["handle"], c["videos"], c["clips"]] for c in data]
+        else:
+            data = views.runs(ws, args.limit)
+            headers, rows = ["run", "what", "status", "started", "results"], \
+                [[r["id"], r["kind"], r["status"], r["started"][:16].replace("T", " "),
+                  ", ".join(f"{i['what']} {i['status']}" for i in r["items"])[:60]] for r in data]
+        if args.json:
+            print(json.dumps(data, indent=2))
+        elif rows:
+            print(_table(rows, headers))
+        else:
+            print("Nothing here yet.")
+    return 0
+
+
 COMMANDS = {"init": cmd_init, "show": cmd_show, "set": cmd_set, "import": cmd_import}
 
 
@@ -159,10 +305,17 @@ def main(argv=None, environ=None):
         ap.parse_args(["workspace", "--help"])
     root = paths.resolve(args.workspace, os.environ if environ is None else environ)
     try:
+        if args.command == "remake":
+            return cmd_remake(args, root)
+        if args.command == "library":
+            return cmd_library(args, root)
         return COMMANDS[args.action](args, root)
-    except WorkspaceError as e:
+    except (WorkspaceError, OpError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":
