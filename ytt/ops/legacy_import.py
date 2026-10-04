@@ -103,14 +103,15 @@ def import_legacy(ws, legacy_dir, dry_run=False):
         conn = ws.conn
         path_to_id = {}
 
-        def ensure_clip(vid, path):
-            """Record the file for a video; keeps a working clip rather than replacing it with a missing one."""
+        def ensure_clip(vid, path, origin):
+            """Record the file for a video; keeps a working clip rather than replacing it with a missing one.
+            origin: 'fetched' only for clips the old archive says the old tool downloaded itself."""
             exists = Path(path).is_file()
             existing = store.get_clip(conn, vid)
             if existing and existing["status"] == "ready" and not exists:
                 clip_id = existing["id"]
             else:
-                clip_id, _ = store.upsert_clip(conn, vid, ws.to_stored(path), "ready" if exists else "missing")
+                clip_id, _ = store.upsert_clip(conn, vid, ws.to_stored(path), "ready" if exists else "missing", origin)
                 if exists:
                     report.clips_ready += 1
                 else:
@@ -127,7 +128,7 @@ def import_legacy(ws, legacy_dir, dry_run=False):
             store.upsert_video(conn, vid, title=entry.get("title"), views=entry.get("views"),
                                duration=entry.get("duration"), source_id=source_id)
             if entry.get("file"):
-                ensure_clip(vid, _abs(entry["file"], dest))
+                ensure_clip(vid, _abs(entry["file"], dest), "found" if entry.get("adopted") else "fetched")
         if auto.get("channel"):
             store.add_source(conn, auto["channel"].strip())
 
@@ -149,7 +150,7 @@ def import_legacy(ws, legacy_dir, dry_run=False):
                 if store.get_clip(conn, vid):
                     continue                                     # the archive already gave this video a file
                 store.upsert_video(conn, vid)
-                ensure_clip(vid, p)
+                ensure_clip(vid, p, "found")
                 report.clips_recovered += 1
 
         # ---- finished compilations
@@ -169,7 +170,7 @@ def import_legacy(ws, legacy_dir, dry_run=False):
                 clip = store.get_clip(conn, vid)
                 if clip is None:
                     store.upsert_video(conn, vid)
-                    clip_id = ensure_clip(vid, path)
+                    clip_id = ensure_clip(vid, path, "found")
                     report.clips_recovered += 1
                 else:
                     clip_id = clip["id"]

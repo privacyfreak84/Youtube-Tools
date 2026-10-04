@@ -76,6 +76,12 @@ MIGRATIONS = [
         finished  TEXT
     );
     """,
+    # ---- version 3: how a clip got into the library. Only 'fetched' clips (ytt downloaded them itself) may ever be
+    # deleted by ytt; 'found' clips were already on the disk and belong to the person; 'imported' is the default for
+    # clips that came from the old tool without saying (treated like 'found').
+    """
+    ALTER TABLE clips ADD COLUMN origin TEXT NOT NULL DEFAULT 'imported' CHECK (origin IN ('fetched', 'found', 'imported'));
+    """,
 ]
 LATEST = len(MIGRATIONS)
 

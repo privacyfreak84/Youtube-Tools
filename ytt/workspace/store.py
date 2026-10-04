@@ -38,14 +38,22 @@ def get_video(conn, youtube_id):
 
 
 # ---- clips
-def upsert_clip(conn, youtube_id, path, status):
-    """Record the local file of a video (the video must already be known). Returns (clip id, created?)."""
+def upsert_clip(conn, youtube_id, path, status, origin=None):
+    """Record the local file of a video (the video must already be known). Returns (clip id, created?).
+    origin: 'fetched' (ytt downloaded it), 'found' (it was already on the disk) or None = leave as it is
+    (a new clip then gets the database default, 'imported')."""
     row = conn.execute("SELECT id FROM clips WHERE youtube_id = ?", (youtube_id,)).fetchone()
     if row:
         conn.execute("UPDATE clips SET path = ?, status = ? WHERE id = ?", (path, status, row["id"]))
+        if origin:
+            conn.execute("UPDATE clips SET origin = ? WHERE id = ?", (origin, row["id"]))
         return row["id"], False
-    cur = conn.execute("INSERT INTO clips (youtube_id, path, status, added) VALUES (?, ?, ?, ?)",
-                       (youtube_id, path, status, now()))
+    if origin:
+        cur = conn.execute("INSERT INTO clips (youtube_id, path, status, added, origin) VALUES (?, ?, ?, ?, ?)",
+                           (youtube_id, path, status, now(), origin))
+    else:
+        cur = conn.execute("INSERT INTO clips (youtube_id, path, status, added) VALUES (?, ?, ?, ?)",
+                           (youtube_id, path, status, now()))
     return cur.lastrowid, True
 
 
@@ -54,7 +62,7 @@ def get_clip(conn, youtube_id):
 
 
 def list_clips(conn):
-    return conn.execute("""SELECT c.*, v.title, v.views, v.duration,
+    return conn.execute("""SELECT c.*, v.title, v.views, v.duration, v.source_id,
                                   EXISTS (SELECT 1 FROM compilation_clips cc WHERE cc.clip_id = c.id) AS used
                            FROM clips c JOIN videos v USING (youtube_id) ORDER BY c.id""").fetchall()
 

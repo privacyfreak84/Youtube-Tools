@@ -97,6 +97,16 @@ class BasicImportTests(ImportTest):
         used = {x["youtube_id"]: x["used"] for x in store.list_clips(self.ws.conn)}
         self.assertEqual(used, {vid(1): 1, vid(2): 1, vid(3): 0})                   # clip 3 was never used
 
+    def test_clips_remember_whether_the_old_tool_downloaded_them_or_they_were_already_there(self):
+        files = self.basic_state()
+        archive = json.loads((self.old.root / "fetch_archive.json").read_text())
+        archive[vid(2)]["adopted"] = True                                          # the old tool only adopted this one
+        self.old.write("fetch_archive.json", archive)
+        self.old.clip(own(9, vid(9)))                                              # on disk, unknown to the archive
+        import_legacy(self.ws, self.old.root)
+        origin = {r["youtube_id"]: r["origin"] for r in store.list_clips(self.ws.conn)}
+        self.assertEqual(origin, {vid(1): "fetched", vid(2): "found", vid(3): "fetched", vid(9): "found"})
+
     def test_old_folder_is_left_exactly_as_it_was(self):
         self.basic_state()
         before = self.old.snapshot()

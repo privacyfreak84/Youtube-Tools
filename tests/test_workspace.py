@@ -85,6 +85,24 @@ class DatabaseTests(TmpTest):
         with self.assertRaises(sqlite3.IntegrityError):
             conn.execute("INSERT INTO clips (youtube_id, path, status, added) VALUES ('nope', 'x', 'ready', 't')")
 
+    def test_a_version_2_database_gets_clip_origins_and_keeps_its_clips(self):
+        conn = db.connect(self.tmp / "t.db")
+        for v in range(2):                                  # exactly what a ytt from before origins wrote
+            conn.executescript(db.MIGRATIONS[v])
+            conn.execute(f"PRAGMA user_version = {v + 1}")
+        store.upsert_video(conn, "abcdefghijk")
+        conn.execute("INSERT INTO clips (youtube_id, path, status, added) VALUES ('abcdefghijk', 'a.mp4', 'ready', 't')")
+        conn.commit()
+        self.assertEqual(db.migrate(conn), db.LATEST)
+        self.assertEqual(store.get_clip(conn, "abcdefghijk")["origin"], "imported")
+
+    def test_clip_origin_is_restricted(self):
+        conn = db.connect(self.tmp / "t.db")
+        db.migrate(conn)
+        store.upsert_video(conn, "abcdefghijk")
+        with self.assertRaises(sqlite3.IntegrityError):
+            store.upsert_clip(conn, "abcdefghijk", "x.mp4", "ready", "stolen")
+
     def test_clip_status_is_restricted(self):
         conn = db.connect(self.tmp / "t.db")
         db.migrate(conn)
@@ -118,6 +136,18 @@ class StoreTests(TmpTest):
         self.assertEqual((first, created, created2), (again, True, False))
         self.assertEqual(len(store.list_clips(self.c)), 1)
         self.assertEqual(store.get_clip(self.c, "abcdefghijk")["status"], "missing")
+
+    def test_a_clip_remembers_how_it_arrived_and_a_plain_update_does_not_change_that(self):
+        store.upsert_video(self.c, "abcdefghijk")
+        store.upsert_clip(self.c, "abcdefghijk", "a.mp4", "ready", "found")
+        self.assertEqual(store.get_clip(self.c, "abcdefghijk")["origin"], "found")
+        store.upsert_clip(self.c, "abcdefghijk", "b.mp4", "missing")               # no origin given: untouched
+        self.assertEqual(store.get_clip(self.c, "abcdefghijk")["origin"], "found")
+        store.upsert_clip(self.c, "abcdefghijk", "c.mp4", "ready", "fetched")      # downloaded again by ytt
+        self.assertEqual(store.get_clip(self.c, "abcdefghijk")["origin"], "fetched")
+        store.upsert_video(self.c, "bbbbbbbbbbb")
+        store.upsert_clip(self.c, "bbbbbbbbbbb", "d.mp4", "ready")
+        self.assertEqual(store.get_clip(self.c, "bbbbbbbbbbb")["origin"], "imported")
 
     def test_styles_roundtrip_and_overwrite(self):
         store.save_style(self.c, "clean", {"transition": "fade"})
