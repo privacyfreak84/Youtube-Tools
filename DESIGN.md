@@ -1,6 +1,6 @@
 # ytt — design
 
-Status: **draft 2, for review. No code is written against this yet.**
+Status: **draft 2. Steps 1-3 of section 20 are built; the rest is not.**
 Replaces the current scripts (`auto_compile.py`, `make_compilations.py`, `stitch_videos.py`, `make_transitions.py`,
 `yt_toolkit.py`) with one tool. The tested rendering engine is kept and wrapped.
 
@@ -365,17 +365,21 @@ removed in one commit.
 
 ## 20. Build order (bottom-up, small commits, pushed)
 
-1. Freeze: current state tagged, tests green. *(done: 85 passing)*
-2. Package skeleton, the import-graph test, workspace (database, config), the old-state import and its report.
-3. Engine wrapper, then `remake` and `library` working headless end to end.
-4. Sources and `fetch`, with runs and the failure rules (download layer behind an interface, faked in tests).
-5. `make` (the full pipeline with validation and plans) and `style`.
-6. The guided menu on top of the same operations.
-7. `research`, `stitch`, `doctor`; consistent output.
-8. Docs; delete the old scripts.
+1. Freeze: current state tagged, tests green. **Done.**
+2. Package skeleton, the import-graph test, workspace (database, config), the old-state import and its report. **Done**
+   (`ytt workspace init|show|set|import`).
+3. Engine wrapper (`ytt/engine/stitch.py`), then `remake` and `library` working headless end to end. **Done**
+   (`ytt remake`, `ytt library`; runs table; plan objects with errors/warnings/notes).
+4. Sources and `fetch`, with runs and the failure rules (download layer behind an interface, faked in tests). Also lets
+   `remake` fetch missing clips again.
+5. `make` (the full pipeline with validation and plans), `make --like`, and `style` commands.
+6. The guided menu on top of the same operations (`rich` + `questionary`).
+7. `research`, `stitch`, `doctor`, `style stingers`; consistent output.
+8. Docs; delete the old scripts; port or replace their tests.
 
 Each step ends in something that runs. The guided UI is last because it is the one layer that can be rebuilt freely
-once the operations are right.
+once the operations are right. The old scripts are frozen while this happens: bug fixes only if the new code can
+not yet replace them.
 
 ## 21. Known limits
 
