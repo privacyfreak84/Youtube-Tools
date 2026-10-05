@@ -14,10 +14,12 @@ from pathlib import Path
 
 from ytt.engine import stitch
 from ytt.engine.stitch import EngineError
+from ytt.ops.compile import fetch as fetch_mod
 from ytt.ops.compile import render as render_mod
 from ytt.ops.compile.style import Style, StyleError
 from ytt.ops.errors import OpError
 from ytt.ops.plan import Action, Item, Plan, RunResult
+from ytt.sources.ytdlp import YtDlpBackend
 from ytt.workspace import store
 
 ORDERS = ("recorded", "reversed")
@@ -51,6 +53,7 @@ class Job:
     output: Path
     spec: object = None              # the engine's RenderSpec
     engine_plan: object = None
+    missing: list = field(default_factory=list)      # ClipRef whose files are gone and will be fetched again first
 
 
 @dataclass
@@ -144,6 +147,25 @@ def _mmss(seconds):
     return f"{m}:{s:02d}"
 
 
+def prepare_job(job):
+    """Probe the clips and plan the render. Raises EngineError if a clip cannot be read."""
+    job.spec = render_mod.spec_for(job.style, [c.path for c in job.clips], job.output)
+    job.engine_plan = stitch.plan(job.spec)
+
+
+def _plural_clips(n):
+    return f"{n} clip" + ("" if n == 1 else "s")
+
+
+def _needed_clips(jobs):
+    """{youtube id: ClipRef} of every clip that has to be fetched again, once even if several compilations use it."""
+    needed = {}
+    for job in jobs:
+        for c in job.missing:
+            needed.setdefault(c.youtube_id, c)
+    return needed
+
+
 def plan_remake(ws, request):
     """Resolve and validate, then describe what will happen. Nothing is changed (no folder is even created).
     A compilation that cannot be remade is skipped with a warning; if none can be, that becomes the error."""
@@ -172,10 +194,11 @@ def plan_remake(ws, request):
             continue
         clips = _clip_refs(ws, row, request.order == "reversed")
         gone = [c for c in clips if not c.path.is_file()]
-        if gone:
-            names = ", ".join(c.label for c in gone[:4]) + (f" and {len(gone) - 4} more" if len(gone) > 4 else "")
-            skipped.append(f"{label}: {len(gone)} of its {len(clips)} clips are no longer on disk ({names}). "
-                           f"Fetching them again arrives with `ytt fetch`; until then they have to be put back.")
+        never_tied = [c for c in gone if c.clip_id is None]
+        if never_tied:
+            names = ", ".join(c.label for c in never_tied[:4]) + (f" and {len(never_tied) - 4} more" if len(never_tied) > 4 else "")
+            skipped.append(f"{label}: {len(never_tied)} of its {len(clips)} clips are no longer on disk and were never tied to "
+                           f"a YouTube video ({names}), so they cannot be fetched again; put them back to remake it.")
             continue
         if request.replace:
             if not row["output_path"]:
@@ -195,20 +218,23 @@ def plan_remake(ws, request):
         if problems:
             skipped.append(f"{label}: " + "; ".join(problems))
             continue
-        job = Job(row, clips, style, style_note, name, output)
-        try:
-            job.spec = render_mod.spec_for(style, [c.path for c in clips], output)
-            job.engine_plan = stitch.plan(job.spec)
-        except EngineError as e:
-            skipped.append(f"{label}: {e}")
-            continue
-        plan.notes += [f"{label}: {n}" for n in job.engine_plan.notes]
-        total_seconds += job.engine_plan.total_seconds
+        job = Job(row, clips, style, style_note, name, output, missing=gone)
+        if gone:
+            # the files are not here to be probed yet; the render is prepared once they have been fetched again
+            length = f"fetches {_plural_clips(len(gone))} again first"
+        else:
+            try:
+                prepare_job(job)
+            except EngineError as e:
+                skipped.append(f"{label}: {e}")
+                continue
+            plan.notes += [f"{label}: {n}" for n in job.engine_plan.notes]
+            total_seconds += job.engine_plan.total_seconds
+            length = f"about {_mmss(job.engine_plan.total_seconds)}"
         verb = "replaces" if request.replace else "makes"
         order_note = ", played backwards" if request.order == "reversed" else ""
         plan.actions.append(Action(
-            "render", f"{verb} {name}: {len(clips)} clips{order_note} · {style_note} · "
-                      f"about {_mmss(job.engine_plan.total_seconds)} · {output}",
+            "render", f"{verb} {name}: {len(clips)} clips{order_note} · {style_note} · {length} · {output}",
             {"compilation": row["name"], "name": name, "output": str(output), "clips": len(clips)}))
         rp.jobs.append(job)
 
@@ -216,6 +242,12 @@ def plan_remake(ws, request):
         plan.errors += skipped or ["Nothing to remake."]
         return rp
     plan.warnings += [f"Skipped {s}" for s in skipped]
+    needed = _needed_clips(rp.jobs)
+    if needed:
+        plan.actions.insert(0, Action("download", f"fetch {_plural_clips(len(needed))} again (no longer on disk)",
+                                      {"videos": sorted(needed)}))
+        plan.notes.append("Clips that are no longer on disk are downloaded again from YouTube, under the names the library "
+                          "recorded. A compilation whose clips cannot all be fetched is skipped.")
 
     where = Path(rp.jobs[0].output).parent if request.replace else out_dir
     for job in rp.jobs:
@@ -234,9 +266,12 @@ def plan_remake(ws, request):
     return rp
 
 
-def run_remake(ws, rp, on_progress=None):
-    """Carry out a plan that has no errors. Each compilation is rendered and recorded on its own, so one failure
-    does not stop the rest, and Ctrl-C keeps everything already finished. on_progress(name, done, total)."""
+def run_remake(ws, rp, on_progress=None, backend=None, on_fetch=None):
+    """Carry out a plan that has no errors. Clips that are no longer on disk are fetched again first (one batch,
+    several at a time); a compilation whose clips could not all be fetched is skipped. Each compilation is then
+    rendered and recorded on its own, so one failure does not stop the rest, and Ctrl-C keeps everything already
+    finished. on_progress(name, done, total) for renders; on_fetch(outcome) for each clip fetched again.
+    `backend` is how YouTube is reached (the real one unless a test hands in a fake)."""
     if not rp.plan.ok:
         raise OpError("The plan has errors; nothing was done.")
     conn = ws.conn
@@ -245,9 +280,31 @@ def run_remake(ws, rp, on_progress=None):
     items, made = [], []
     cancelled = False
     index = 0
+    phase = "fetch"
+    fetched, failed_fetch = set(), {}
     try:
+        needed = _needed_clips(rp.jobs)
+        if needed:
+            backend = backend or YtDlpBackend.from_config(ws.config)
+            wanted = [(vid, c.label, store.get_clip(conn, vid)) for vid, c in needed.items()]
+            max_height = max(j.style.max_height for j in rp.jobs if j.missing)
+            outcome = fetch_mod.fetch_again(ws, backend, wanted, max_height, max(1, int(ws.config["workers"])),
+                                            on_event=on_fetch)
+            fetched = {v for v, err in outcome.items() if err is None}
+            failed_fetch = {v: err for v, err in outcome.items() if err}
+        phase = "render"
         for index, job in enumerate(rp.jobs):
+            bad = [c for c in job.missing if c.youtube_id in failed_fetch]
+            if bad:
+                items.append(Item(job.name, "failed", f"{_plural_clips(len(bad))} could not be fetched again "
+                                                      f"({failed_fetch[bad[0].youtube_id]}); not remade"))
+                continue
             try:
+                if job.spec is None:                        # its clips were fetched just now: they may have a new place
+                    for c in job.clips:
+                        if c.youtube_id in fetched:
+                            c.path = ws.from_stored(store.get_clip(conn, c.youtube_id)["path"])
+                    prepare_job(job)
                 stitch.render(job.spec, on_progress=(lambda d, t, n=job.name: on_progress(n, d, t)) if on_progress else None,
                               plan_=job.engine_plan)
             except EngineError as e:
@@ -269,9 +326,31 @@ def run_remake(ws, rp, on_progress=None):
     except KeyboardInterrupt:
         cancelled = True
         conn.rollback()
-        items.append(Item(rp.jobs[index].name, "cancelled", "stopped by the user"))
-        items += [Item(j.name, "skipped", "not started") for j in rp.jobs[index + 1:]]
-    result = RunResult(run_id, "", items, made)
+        if phase == "fetch":
+            items.append(Item("fetching clips again", "cancelled", "stopped by the user"))
+            items += [Item(j.name, "skipped", "not started") for j in rp.jobs]
+        else:
+            items.append(Item(rp.jobs[index].name, "cancelled", "stopped by the user"))
+            items += [Item(j.name, "skipped", "not started") for j in rp.jobs[index + 1:]]
+
+    deleted = 0
+    if ws.config["delete_used_clips"] and fetched and not cancelled:
+        # the clips fetched again were deleted on purpose last time ("delete used clips"): delete them again,
+        # but only once every compilation that needed them has been remade
+        for vid in sorted(fetched):
+            users = [j for j in rp.jobs if any(c.youtube_id == vid for c in j.missing)]
+            if users and all(j.name in made for j in users):
+                row = store.get_clip(conn, vid)
+                try:
+                    ws.from_stored(row["path"]).unlink()
+                except FileNotFoundError:
+                    pass
+                store.upsert_clip(conn, vid, row["path"], "missing")
+                deleted += 1
+        conn.commit()
+
+    result = RunResult(run_id, "", items, made,
+                       {"fetched_again": len(fetched), "could_not_fetch": len(failed_fetch), "deleted_again": deleted})
     result.status = "cancelled" if cancelled else result.summary_status()
     store.finish_run(conn, run_id, result.status, [asdict(i) for i in items])
     conn.commit()

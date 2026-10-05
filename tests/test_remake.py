@@ -7,6 +7,7 @@ import io
 import json
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from ytt.engine import stitch
@@ -58,6 +59,130 @@ class RemakeWorld(_World):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.main(["--workspace", str(self.ws.root), *argv])
         return code, out.getvalue(), err.getvalue()
+
+
+try:
+    from fakes import FakeBackend
+except ImportError:
+    from tests.fakes import FakeBackend
+
+
+class RemakeFetchesMissingClipsAgain(RemakeWorld):
+    """Clips whose files are gone (for example removed after use) are downloaded again before remaking."""
+
+    def setUp(self):
+        super().setUp()
+        self.backend = FakeBackend()
+
+    def clip_paths(self, name):
+        comp = store.get_compilation(self.ws.conn, name)
+        return [(r["youtube_id"], self.ws.from_stored(r["path"])) for r in store.compilation_clips(self.ws.conn, comp["id"])]
+
+    def delete_clips(self, name):
+        gone = self.clip_paths(name)
+        for _, path in gone:
+            os.remove(path)
+        return [vid for vid, _ in gone]
+
+    def remake_again(self, **kw):
+        rp = self.plan(**kw)
+        self.assertTrue(rp.plan.ok, rp.plan.errors)
+        return rm.run_remake(self.ws, rp, backend=self.backend)
+
+    def test_the_plan_says_what_will_be_fetched_and_changes_nothing(self):
+        ids = self.delete_clips("compilation_001")
+        rp = self.plan(targets="compilation_001")
+        self.assertTrue(rp.plan.ok)
+        self.assertEqual(rp.plan.actions[0].kind, "download")
+        self.assertEqual(sorted(rp.plan.actions[0].data["videos"]), sorted(ids))
+        self.assertIn("fetches 4 clips again first", rp.plan.actions[1].text)
+        self.assertEqual(self.backend.started, [])
+        self.assertTrue(all(not p.exists() for _, p in self.clip_paths("compilation_001")))
+
+    def test_deleted_clips_are_fetched_again_and_the_same_clips_are_remade_in_the_same_order(self):
+        before = self.clip_ids("compilation_001")
+        ids = self.delete_clips("compilation_001")
+        result = self.remake_again(targets="compilation_001")
+        self.assertEqual((result.status, result.made), ("completed", ["compilation_003"]))
+        self.assertEqual(sorted(self.backend.downloads), sorted(ids))
+        self.assertEqual(self.clip_ids("compilation_003"), before)
+        self.assertEqual(result.counts["fetched_again"], 4)
+        for vid, path in self.clip_paths("compilation_001"):
+            self.assertTrue(path.is_file(), vid)
+            self.assertEqual(store.get_clip(self.ws.conn, vid)["status"], "ready")
+            self.assertEqual(store.get_clip(self.ws.conn, vid)["origin"], "fetched")
+        orig = _durations(self.tmp / "compilations" / "compilation_001.mp4")["video"]
+        self.assertAlmostEqual(_durations(self.ws.compilations_dir / "compilation_003.mp4")["video"], orig, delta=0.3)
+
+    def test_clips_come_back_under_the_names_the_old_tool_gave_them(self):
+        names = {vid: path.name for vid, path in self.clip_paths("compilation_001")}
+        self.assertTrue(all(n.startswith("2026") for n in names.values()), names)       # e.g. 20261004-1709_0001_<id>.mp4
+        self.delete_clips("compilation_001")
+        self.assertEqual(self.remake_again(targets="compilation_001").status, "completed")
+        self.assertEqual({vid: path.name for vid, path in self.clip_paths("compilation_001")}, names)
+
+    def test_a_clip_recorded_somewhere_else_comes_back_into_the_clips_folder_and_the_render_uses_that_place(self):
+        vid, path = self.clip_paths("compilation_001")[0]
+        elsewhere = self.tmp / "elsewhere" / "mine.mp4"
+        elsewhere.parent.mkdir()
+        path.rename(elsewhere)
+        store.upsert_clip(self.ws.conn, vid, str(elsewhere), "ready")
+        self.ws.conn.commit()
+        elsewhere.unlink()
+        self.assertEqual(self.remake_again(targets="compilation_001").status, "completed")
+        self.assertEqual(self.clip_paths("compilation_001")[0][1], self.ws.clips_dir / f"{vid}.mp4")
+
+    def test_with_delete_used_clips_on_the_clips_fetched_again_are_deleted_again(self):
+        self.ws.config["delete_used_clips"] = True
+        self.delete_clips("compilation_001")
+        result = self.remake_again(targets="compilation_001")
+        self.assertEqual((result.status, result.counts["deleted_again"]), ("completed", 4))
+        for vid, path in self.clip_paths("compilation_001"):
+            self.assertFalse(path.exists())
+            self.assertEqual(store.get_clip(self.ws.conn, vid)["status"], "missing")
+        self.assertEqual(self.clip_ids("compilation_003"), self.clip_ids("compilation_001"))   # still remade
+
+    def test_clips_that_were_not_gone_are_left_alone(self):
+        self.delete_clips("compilation_001")
+        self.ws.config["delete_used_clips"] = True
+        self.remake_again(targets="all")
+        for _, path in self.clip_paths("compilation_002"):
+            self.assertTrue(path.is_file())                       # compilation_002's clips were never touched
+
+    def test_a_clip_that_cannot_be_fetched_skips_only_the_compilation_that_needs_it(self):
+        ids = self.delete_clips("compilation_001")
+        self.backend.fail = {ids[0]}
+        result = self.remake_again(targets="all")
+        self.assertEqual((result.status, result.made), ("partial", ["compilation_004"]))
+        failed = [i for i in result.items if i.status == "failed"]
+        self.assertEqual([i.what for i in failed], ["compilation_003"])
+        self.assertIn("1 clip could not be fetched again", failed[0].detail)
+        self.assertEqual(sorted(c["name"] for c in views.compilations(self.ws)),
+                         ["compilation_001", "compilation_002", "compilation_004"])
+
+    def test_nothing_can_be_remade_when_nothing_can_be_fetched(self):
+        ids = self.delete_clips("compilation_001")
+        self.backend.fail = set(ids)
+        result = self.remake_again(targets="compilation_001")
+        self.assertEqual((result.status, result.made), ("failed", []))
+
+    def test_ctrl_c_while_fetching_ends_the_run_as_cancelled_and_keeps_what_arrived(self):
+        ids = self.delete_clips("compilation_001")
+        self.backend.interrupt = {ids[2]}
+        result = self.remake_again(targets="compilation_001")
+        self.assertEqual((result.status, result.made), ("cancelled", []))
+        self.assertEqual(len(views.compilations(self.ws)), 2)                        # nothing half-made
+        arrived = [c for c in store.list_clips(self.ws.conn) if c["status"] == "ready" and Path(self.ws.from_stored(c["path"])).is_file()]
+        self.assertGreaterEqual(len(arrived), 8 - 4 + 1)                              # the 4 others plus what arrived
+
+    def test_a_remake_that_needs_no_fetching_never_touches_the_network(self):
+        self.remake_again(targets="last")
+        self.assertEqual(self.backend.started, [])
+
+    def test_replace_fetches_again_too(self):
+        self.delete_clips("compilation_002")
+        result = self.remake_again(targets="compilation_002", replace=True)
+        self.assertEqual((result.status, result.made), ("completed", ["compilation_002"]))
 
 
 class RemakeTests(RemakeWorld):
@@ -184,18 +309,23 @@ class PlanTests(RemakeWorld):
         with self.assertRaises(OpError):
             self.plan(targets="last", order="sideways")
 
-    def test_missing_clips_block_a_single_target_and_name_the_clips(self):
-        comp = store.get_compilation(self.ws.conn, "compilation_002")
-        victim = store.compilation_clips(self.ws.conn, comp["id"])[0]
-        os.remove(victim["path"])
+    def cut_loose(self, compilation, position=1):
+        """Make one clip of a compilation something that was never tied to a YouTube video (so it cannot be fetched
+        again) and whose file is not there."""
+        comp = store.get_compilation(self.ws.conn, compilation)
+        self.ws.conn.execute("UPDATE compilation_clips SET clip_id = NULL, legacy_name = 'mystery.mp4' "
+                             "WHERE compilation_id = ? AND position = ?", (comp["id"], position))
+        self.ws.conn.commit()
+
+    def test_a_clip_that_is_gone_and_was_never_tied_to_a_video_blocks_a_single_target_and_is_named(self):
+        self.cut_loose("compilation_002")
         rp = self.plan(targets="last")
         self.assertFalse(rp.plan.ok)
-        self.assertIn(victim["youtube_id"], rp.plan.errors[0])
-        self.assertIn("ytt fetch", rp.plan.errors[0])
+        self.assertIn("mystery.mp4", rp.plan.errors[0])
+        self.assertIn("never tied to a YouTube video", rp.plan.errors[0])
 
     def test_with_several_targets_the_unremakable_one_is_skipped_with_a_warning_and_the_rest_go_ahead(self):
-        comp = store.get_compilation(self.ws.conn, "compilation_002")
-        os.remove(store.compilation_clips(self.ws.conn, comp["id"])[0]["path"])
+        self.cut_loose("compilation_002")
         rp = self.plan(targets="all")
         self.assertTrue(rp.plan.ok)
         self.assertEqual(len(rp.jobs), 1)
