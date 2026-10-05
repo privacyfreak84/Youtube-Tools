@@ -184,6 +184,25 @@ Details pinned down by reading the code:
 
 A selection has two forms: a **query** (channel + filters above) or an explicit **list of videos** (section 14).
 
+As built in `ytt fetch` (step 4):
+
+- A query needs exactly one of `--clips`, `-n`, `--range`, `--take`; there is no hidden default count. `--sort`
+  defaults to `popular`; `--type` to `videos`. A list (`--videos FILE`, `-` for stdin) takes none of the query options.
+- `--clips` and `-n` (and `--take new:N` / `comps:N`) are *fill* selections: a failed download is replaced by the next
+  video in line, so you still get N when the channel has them. `--range` and the other `--take` forms are *exact*: only
+  those positions are tried, anything already in the library is skipped, and a failure is reported, not replaced.
+  A list is exact too.
+- Likely re-uploads are found before counting (same title ignoring case/punctuation, and same length to the second;
+  only the first 70 characters of a title count so clips imported from the old tool still match). A video with no
+  known length is never called a look-alike. Always reported as a guess.
+- Exact upload dates are looked up only where the date range needs them (about log2(n) lookups per edge, not n).
+- Videos found on disk (in the clips folder or a `watch_folders` entry, by the 11-character id in the file name) are
+  added to the library as `found` clips instead of being downloaded again. Files in other folders are used where they
+  are and are never moved or deleted.
+- `--refetch` ignores what the library has, downloads again, and replaces the existing file in the clips folder.
+- Quality cap: `--max-height`, else the default style's `max_height`. Parallel downloads: `--workers`, else the
+  workspace setting. Cookies come from the workspace settings (`cookies_from_browser`, `cookies_file`), not flags.
+
 ## 9. Style
 
 A style is a named, reusable description of how a compilation is *rendered*, limited to what the engine can do today:
@@ -241,6 +260,10 @@ Two levels, kept apart: a **video** is known (id, title, views, date, channel); 
 status of `ready`, `missing` or `failed`. "Used" and "unused" are derived from which compilations contain a clip.
 "Unused" replaces "leftover". Download progress (queued, downloading) is part of a *run*, not a stored state.
 
+A clip also records how it arrived: `fetched` (ytt downloaded it), `found` (it was already on the disk) or `imported`
+(it came from the old tool without saying). Only `fetched` clips may ever be deleted by ytt (delete-used-clips in
+step 5); the person's own files are never touched.
+
 When the library has fewer clips than a full compilation needs, one setting decides:
 `--if-short keep|short|fetch` (today's `--leftover keep|short|topup`); the guided menu asks.
 Removing a clip that compilations reference warns first and says they could no longer be remade.
@@ -279,7 +302,12 @@ has its own outcome. Rules, so that re-running is always safe:
 - Downloads go to temporary names and are renamed only when complete; a render goes to a temporary file and is renamed
   only when ffmpeg finishes. A crash leaves no half-written file that looks finished.
 - A clip or compilation is recorded only after its file is complete. Nothing is recorded in advance.
-- A failed download is replaced by the next video in line (today's behaviour) and reported.
+- A failed download is replaced by the next video in line (today's behaviour) and reported, for fill selections (see
+  section 8). A fetch run is `completed` when the number asked for arrived, even if some downloads failed on the way
+  (those stay listed as failed); `partial` when fewer arrived; `failed` when none did.
+- Clips are recorded in the order they were chosen, even when parallel downloads finish out of order, so the clip
+  order of a later `make` is the order the person picked. A kill that cannot be caught (power loss) can leave finished
+  files that were not recorded yet; the next fetch finds them by id and adds them.
 - `fetch` is idempotent: a second run downloads only what is still missing.
 - **Ctrl-C** stops cleanly: running ffmpeg is terminated, its temporary file removed, everything already completed is
   kept and recorded, the run ends as `cancelled`, and the summary says what finished. Exit code 130.
@@ -371,7 +399,9 @@ removed in one commit.
 3. Engine wrapper (`ytt/engine/stitch.py`), then `remake` and `library` working headless end to end. **Done**
    (`ytt remake`, `ytt library`; runs table; plan objects with errors/warnings/notes).
 4. Sources and `fetch`, with runs and the failure rules (download layer behind an interface, faked in tests). Also lets
-   `remake` fetch missing clips again.
+   `remake` fetch missing clips again. **Done** (`ytt fetch`; `ytt/sources`; migration 3 adds clip origin; `remake`
+   fetches gone clips again under their recorded names, skips a compilation whose clips cannot be fetched, and
+   deletes the re-fetched clips again when delete-used-clips is on). Real YouTube downloads are untested.
 5. `make` (the full pipeline with validation and plans), `make --like`, and `style` commands.
 6. The guided menu on top of the same operations (`rich` + `questionary`).
 7. `research`, `stitch`, `doctor`, `style stingers`; consistent output.
@@ -385,10 +415,14 @@ not yet replace them.
 
 - Downloads can only be verified against real YouTube on the user's machine; the development sandbox cannot reach it.
   The download layer stays small and is covered by fakes.
+- `ytt/sources/ytdlp.py` is covered by a stand-in for yt-dlp and by one check against the real yt-dlp's format
+  selection; what real YouTube returns (list fields, rough dates, 403s, rate limits) is unverified until run on the
+  user's machine.
+- Videos found in a `watch_folders` entry are now library clips and can be used in compilations (the old tool counted
+  them as downloaded but never compiled them). They are never deleted. Revisit in step 5 if that is not wanted.
 - Some old behaviours were found by reading code and tests, not documentation (for example exactly how `--reverse`
   and `--reverse-each` combine with `--take`). Each is ported together with its existing test.
 
 ## 22. Open questions
 
-- Confirm the `--clips` change in section 8 (60 *new* clips instead of "first 60 positions").
 - Final name (`ytt` for now).
