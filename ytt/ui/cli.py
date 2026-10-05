@@ -8,11 +8,16 @@ import tempfile
 from pathlib import Path
 
 from ytt import __version__
+from ytt.ops.compile import fetch as fetch_mod
 from ytt.ops.compile import remake as remake_mod
 from ytt.ops.compile import style as style_mod
 from ytt.ops.errors import OpError
 from ytt.ops.library import views
 from ytt.ops.legacy_import import import_legacy
+from ytt.sources import channel as chan
+from ytt.sources import selection as sel
+from ytt.sources.errors import SourceError
+from ytt.sources.ytdlp import YtDlpBackend
 from ytt.workspace import config as cfgmod
 from ytt.workspace import paths
 from ytt.workspace.errors import WorkspaceError
@@ -38,6 +43,32 @@ def build_parser():
                                      "Nothing in OLD_FOLDER is changed. Safe to run more than once.")
     im.add_argument("old_folder", metavar="OLD_FOLDER", help="the folder the old scripts ran in")
     im.add_argument("--dry-run", action="store_true", help="show what would be imported, change nothing")
+
+    fe = sub.add_parser("fetch", help="get clips from a channel into the library",
+                        description="Download clips into the library. Say which channel, how many, and (optionally) "
+                                    "which ones. Videos the library already has are never downloaded again.")
+    fe.add_argument("channel", nargs="?", default="", metavar="CHANNEL", help="@Name or a channel link")
+    fe.add_argument("--type", choices=chan.TABS, default="videos", help="which tab: videos (default) or shorts")
+    fe.add_argument("--from", dest="date_from", metavar="DATE", default="", help="uploaded on or after, e.g. 2025-01-31")
+    fe.add_argument("--to", dest="date_to", metavar="DATE", default="", help="uploaded on or before")
+    fe.add_argument("--min-views", type=int, default=0, metavar="N")
+    fe.add_argument("--min-length", type=float, default=0, metavar="MIN", help="shortest, in minutes")
+    fe.add_argument("--max-length", type=float, default=0, metavar="MIN", help="longest, in minutes")
+    fe.add_argument("--sort", choices=sel.SORTS, default="popular", help="popular (default), latest, oldest, ...")
+    how = fe.add_mutually_exclusive_group()
+    how.add_argument("--clips", type=int, default=0, metavar="N", help="N NEW clips (not already in the library)")
+    how.add_argument("-n", dest="compilations", type=int, default=0, metavar="N",
+                     help="enough new clips for N full compilations (clips already waiting count)")
+    how.add_argument("--range", default="", metavar="A-B", help="exact positions in the sorted list, e.g. 25-70")
+    how.add_argument("--take", default="", metavar="EXPR", help="advanced: last:20, every:5, random:30, new:60, comps:5")
+    how.add_argument("--videos", metavar="FILE", help="a list of YouTube ids or links, one per line (- for stdin), "
+                                                       "instead of a channel")
+    fe.add_argument("--keep-duplicates", action="store_true", help="also download look-alike re-uploads")
+    fe.add_argument("--refetch", action="store_true", help="download again even videos the library already has")
+    fe.add_argument("--max-height", type=int, default=0, metavar="PIXELS", help="quality cap (default: the default style's)")
+    fe.add_argument("--workers", type=int, default=0, metavar="N", help="downloads at once (default: the workspace setting)")
+    fe.add_argument("--dry-run", action="store_true", help="show the plan, download nothing")
+    fe.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
 
     rm = sub.add_parser("remake", help="render finished compilations again, with changes",
                         description="Render recorded compilations again from the same clips in the same order. "
@@ -66,6 +97,11 @@ def build_parser():
     return ap
 
 
+def make_backend(ws):
+    """How YouTube is reached. A function of its own so tests can hand in a fake instead."""
+    return YtDlpBackend.from_config(ws.config)
+
+
 # ---------------------------------------------------------------- showing things
 def is_tty():
     return sys.stdin.isatty()
@@ -89,13 +125,20 @@ def _dur(seconds):
     return f"{m}:{s:02d}"
 
 
-def render_plan(plan):
+def render_plan(plan, full=True, limit=12):
+    """full=False shortens a long list of actions (a fetch of 45 clips) to the first few; --dry-run shows all."""
     out = [plan.title]
-    out += [f"  {a.text}" for a in plan.actions]
+    actions = plan.actions
+    shown = actions if full or len(actions) <= limit else actions[:limit - 2]
+    out += [f"  {a.text}" for a in shown]
+    if len(shown) < len(actions):
+        out.append(f"  ... and {len(actions) - len(shown)} more (--dry-run lists them all)")
     for label, items in (("Errors", plan.errors), ("Warnings", plan.warnings), ("Notes", plan.notes)):
         if items:
             out += ["", label] + [f"  - {i}" for i in items]
     return "\n".join(out)
+
+
 def _plural(n, word):
     return f"{n} {word}" + ("" if n == 1 else "s")
 
@@ -214,10 +257,82 @@ def _confirm(args):
     return answer in ("", "y", "yes")
 
 
+def _read_video_list(source):
+    try:
+        text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise OpError(f"can't read the list of videos {source}: {e}")
+    try:
+        return chan.parse_video_ids(text)
+    except ValueError as e:
+        raise OpError(f"{source}: {e}")
+
+
+def _short(text, width=60):
+    text = text or ""
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def cmd_fetch(args, root):
+    request = fetch_mod.FetchRequest(
+        channel=args.channel, type=args.type, date_from=args.date_from, date_to=args.date_to,
+        min_views=args.min_views, min_length=args.min_length, max_length=args.max_length, sort=args.sort,
+        clips=args.clips, compilations=args.compilations, range=args.range, take=args.take,
+        videos=_read_video_list(args.videos) if args.videos else None,
+        keep_duplicates=args.keep_duplicates, refetch=args.refetch, max_height=args.max_height, workers=args.workers)
+    with Workspace.open(root) as ws:
+        backend = make_backend(ws)
+        stage = [None]
+
+        def say(text):
+            """What is being read, on stderr so the plan on stdout stays clean."""
+            if sys.stderr.isatty():
+                print(f"\r{text}   ", end="", file=sys.stderr, flush=True)
+            elif stage[0] != text.split(" ")[0]:
+                print(text, file=sys.stderr, flush=True)
+            stage[0] = text.split(" ")[0]
+
+        fp = fetch_mod.plan_fetch(ws, request, backend, progress=say)
+        if sys.stderr.isatty() and stage[0]:
+            print("\r" + " " * 78 + "\r", end="", file=sys.stderr)
+        print(render_plan(fp.plan, full=args.dry_run))
+        if not fp.plan.ok:
+            return 1
+        if not fp.target and not fp.adopt:
+            print("\nNothing to do.")
+            return 0
+        if args.dry_run:
+            print("\n(dry run: nothing was done)")
+            return 0
+        if not _confirm(args):
+            print("Cancelled; nothing was done.")
+            return 0
+
+        def event(outcome, done, target):
+            where = f"#{outcome.job.position} " if outcome.job.position else ""
+            if outcome.status == "completed":
+                print(f"  [{done}/{target}] {where}{_short(outcome.job.label) or outcome.job.video_id}", flush=True)
+            else:
+                print(f"  skipped {where}{_short(outcome.job.label) or outcome.job.video_id}: {outcome.detail}", flush=True)
+
+        print()
+        result = fetch_mod.run_fetch(ws, fp, backend, on_event=event)
+        c = result.counts
+        bits = [f"{_plural(c['downloaded'], 'clip')} downloaded"]
+        if c["adopted"]:
+            bits.append(f"{c['adopted']} already on your disk added")
+        if c["failed"]:
+            bits.append(f"{c['failed']} failed")
+        print(f"\n{result.status.capitalize()}: {', '.join(bits)} (run {result.run_id}). Clips are in {ws.clips_dir}")
+        if result.status == "partial":
+            print("  Fewer clips than asked arrived; run the same command again to try for the rest.")
+        return {"completed": 0, "cancelled": 130}.get(result.status, 1)
+
+
 def cmd_remake(args, root):
     with Workspace.open(root) as ws:
         rp = remake_mod.plan_remake(ws, remake_mod.RemakeRequest(args.targets, args.style, args.order, args.replace))
-        print(render_plan(rp.plan))
+        print(render_plan(rp.plan, full=args.dry_run))
         if not rp.plan.ok:
             return 1
         if args.dry_run:
@@ -236,8 +351,14 @@ def cmd_remake(args, root):
                 shown[name] = pct // 25
                 print(f"  {name}: {pct}%", flush=True)
 
+        def fetched(outcome):
+            if outcome.status == "completed":
+                print(f"  fetched again {_short(outcome.job.label)}", flush=True)
+            else:
+                print(f"  could not fetch {_short(outcome.job.label)}: {outcome.detail}", flush=True)
+
         print()
-        result = remake_mod.run_remake(ws, rp, on_progress=progress)
+        result = remake_mod.run_remake(ws, rp, on_progress=progress, backend=make_backend(ws), on_fetch=fetched)
         if sys.stdout.isatty():
             print()
         for item in result.items:
@@ -267,8 +388,8 @@ def cmd_library(args, root):
             return 0
         if what == "clips":
             data = views.clips(ws, status=args.status, unused=args.unused)
-            headers, rows = ["id", "youtube id", "status", "used", "length", "views", "title"], \
-                [[c["id"], c["youtube_id"], c["status"], "yes" if c["used"] else "no", _dur(c["duration"]),
+            headers, rows = ["id", "youtube id", "status", "from", "used", "length", "views", "title"], \
+                [[c["id"], c["youtube_id"], c["status"], c["origin"], "yes" if c["used"] else "no", _dur(c["duration"]),
                   c["views"] if c["views"] is not None else "-", (c["title"] or "")[:50]] for c in data]
         elif what == "compilations":
             data = views.compilations(ws)
@@ -305,12 +426,14 @@ def main(argv=None, environ=None):
         ap.parse_args(["workspace", "--help"])
     root = paths.resolve(args.workspace, os.environ if environ is None else environ)
     try:
+        if args.command == "fetch":
+            return cmd_fetch(args, root)
         if args.command == "remake":
             return cmd_remake(args, root)
         if args.command == "library":
             return cmd_library(args, root)
         return COMMANDS[args.action](args, root)
-    except (WorkspaceError, OpError) as e:
+    except (WorkspaceError, OpError, SourceError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

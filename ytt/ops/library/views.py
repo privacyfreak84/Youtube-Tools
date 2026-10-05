@@ -22,7 +22,7 @@ def clips(ws, status=None, unused=False):
             continue
         out.append({"id": r["id"], "youtube_id": r["youtube_id"], "title": r["title"], "views": r["views"],
                     "duration": r["duration"], "status": r["status"], "used": bool(r["used"]),
-                    "path": str(ws.from_stored(r["path"]))})
+                    "origin": r["origin"], "path": str(ws.from_stored(r["path"]))})
     return out
 
 
