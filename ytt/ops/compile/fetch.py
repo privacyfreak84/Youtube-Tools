@@ -178,10 +178,12 @@ def _check_request(r):
 
 
 # ---------------------------------------------------------------- plan
-def plan_fetch(ws, request, backend, progress=None):
+def plan_fetch(ws, request, backend, progress=None, make_cfg=None):
     """Resolve and validate, then describe what will happen. Nothing is changed. `progress(text)` is told what is
-    being read, because a big channel takes a while."""
+    being read, because a big channel takes a while. make_cfg: the size of a compilation when it is not the workspace's
+    (what `make --per 6` means for -n)."""
     say = progress or (lambda text: None)
+    make_cfg = make_cfg or ws.config["make"]
     _check_request(request)
     conn = ws.conn
     listed = request.videos is None
@@ -260,7 +262,7 @@ def plan_fetch(ws, request, backend, progress=None):
             count = request.clips
             what = f"{_plural(count, 'new clip')}"
         elif request.compilations:
-            per, exact = clips_per_compilation(ws.config["make"], ranked)
+            per, exact = clips_per_compilation(make_cfg, ranked)
             waiting = len(waiting_clips(ws))
             count = max(0, request.compilations * per - waiting)
             what = (f"enough new clips for {_plural(request.compilations, 'compilation')} of "
@@ -268,7 +270,7 @@ def plan_fetch(ws, request, backend, progress=None):
         else:
             take = sel.parse_range(request.range) if request.range else sel.parse_take(request.take)
             if take[0] == "comps":
-                per, exact = clips_per_compilation(ws.config["make"], ranked)
+                per, exact = clips_per_compilation(make_cfg, ranked)
                 waiting = len(waiting_clips(ws))
                 count = max(0, take[1] * per - waiting)
                 what = (f"enough new clips for {_plural(take[1], 'compilation')} of "
@@ -288,7 +290,6 @@ def plan_fetch(ws, request, backend, progress=None):
             picked = candidates[:count]
             queue = candidates if picked else []
             fp.target = len(picked)
-            fp.spare = len(candidates) - len(picked)
             if count == 0:
                 plan.notes.append("Already enough clips are waiting in your library, so nothing needs downloading.")
             elif not candidates:
@@ -320,6 +321,7 @@ def plan_fetch(ws, request, backend, progress=None):
             if not picked:
                 plan.notes.append("Nothing new in that selection. For the next batch pick other positions, or use --clips N."
                                   + range_note)
+        fp.spare = max(0, sum(1 for v in ranked if v.id not in skip) - fp.target)
         if dups:
             plan.notes.append("Look-alikes are a guess (same title and length); --keep-duplicates downloads them too.")
         fp.jobs = [Job(v.id, v.title, position=p, path=_refetch_path(ws, v.id, request)) for p, v in queue]

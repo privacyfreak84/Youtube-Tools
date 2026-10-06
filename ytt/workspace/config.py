@@ -20,6 +20,7 @@ DEFAULTS = {
         "clips_each": 15,
         "minutes_each": 10,
         "order": "name",              # name | oldest | newest | random
+        "if_short": "keep",           # clips left over that cannot fill a compilation: keep | short | fetch
         "prefix": "compilation",
     },
 }

@@ -62,7 +62,7 @@ def get_clip(conn, youtube_id):
 
 
 def list_clips(conn):
-    return conn.execute("""SELECT c.*, v.title, v.views, v.duration, v.source_id,
+    return conn.execute("""SELECT c.*, v.title, v.views, v.duration, v.published, v.source_id,
                                   EXISTS (SELECT 1 FROM compilation_clips cc WHERE cc.clip_id = c.id) AS used
                            FROM clips c JOIN videos v USING (youtube_id) ORDER BY c.id""").fetchall()
 

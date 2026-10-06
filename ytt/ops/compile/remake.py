@@ -197,14 +197,7 @@ def plan_remake(ws, request):
             name, output = row["name"], ws.from_stored(row["output_path"])
         else:
             name, output = new_names[i], out_dir / f"{new_names[i]}.mp4"
-        problems = []
-        if style.stinger_dir and not Path(style.stinger_dir).is_dir():
-            problems.append(f"the transition-video folder {style.stinger_dir} does not exist")
-        if style.transition == "stinger" and not style.stinger_dir:
-            problems.append("its transition is 'stinger' but no transition-video folder is set")
-        for what, f in (("intro", style.intro), ("outro", style.outro)):
-            if f and not Path(f).is_file():
-                problems.append(f"the {what} video {f} does not exist")
+        problems = render_mod.style_problems(style)
         if problems:
             skipped.append(f"{label}: " + "; ".join(problems))
             continue
