@@ -1,6 +1,6 @@
 # ytt — design
 
-Status: **draft 2. Steps 1-3 of section 20 are built; the rest is not.**
+Status: **draft 2. Steps 1-6 of section 20 are built; steps 7 and 8 are not.**
 Replaces the current scripts (`auto_compile.py`, `make_compilations.py`, `stitch_videos.py`, `make_transitions.py`,
 `yt_toolkit.py`) with one tool. The tested rendering engine is kept and wrapped.
 
@@ -129,6 +129,32 @@ download; that is handled by failure rules, not pretended away.
 
 Interactive mode is a *request builder* and nothing more. Every menu question has a matching flag, and the other
 way round. The menu never shows list-position syntax; it asks plain questions ("How many clips?").
+
+**The guided menu, as built (step 6).** `ytt` with no arguments at a terminal starts it; without a terminal (a pipe, a
+script) it prints help, so a script never waits for an answer.
+
+- *One way in.* The menu turns its answers into the command line the flags would have made, as a list of words, and
+  runs that list through the same parser and the same command functions (`cli.run_argv`). So a menu answer and a flag
+  cannot differ, and the plan screen, the "Proceed? [Y/n]", the progress and the exit codes are the command's own.
+  Before running, the menu prints `Command line for this:  ytt make @Chan --clips 45 ...`, so the flags can be learned
+  from it. Tests check the exact words for every flow and that the real parser turns them into the request the answers
+  describe.
+- *Entries.* Make compilations (from a channel, from the library, from a list of videos in a file, or `--like` an
+  earlier make), Get clips only, Remake, Look at the library (summary, clips, compilations, sources, runs, forget),
+  Styles (list, show, change or make new, delete), Workspace and settings (show, change a setting, bring in the old
+  scripts' state with a preview first). With no workspace yet it offers to set one up, empty or with the old state.
+- *Questions.* Only what has to be asked: where the clips come from, which channel, videos or shorts, which come first,
+  how much (a number of compilations, a number of new clips, or one stretch of the list as two plain numbers). Then two
+  tick-lists, "Narrow it down?" (dates, views, length) and "Change anything else?" (style, size, clip order,
+  direction, what to do with leftovers, deleting used clips, retrying unreadable clips, look-alikes, refetch, picture
+  quality); nothing ticked means the workspace's usual settings, and each question starts at the usual value. Last:
+  "Ready. What next?": show the plan, show every detail of the plan and do nothing (`--dry-run`), or go back.
+- *Not in the menu, on purpose:* `--take` (the advanced grammar), `--yes`, `--json`, `--workers` (a workspace setting,
+  reachable under Workspace and settings), and changing the selection of a `--like` (type it as flags).
+- *Keys.* Arrows and enter choose, space ticks, typing answers text (a wrong answer is refused with a reason and asked
+  again), Ctrl-C goes back one step, and at the main menu quits. `questionary` is used only in `ytt/ui/prompts.py` and
+  `rich` only for the header, so every command works without either installed; the menu says what to install if they
+  are missing.
 
 ## 7. Commands
 
@@ -438,7 +464,8 @@ removed in one commit.
 5. `make` (the full pipeline with validation and plans), `make --like`, and `style` commands. **Done**
    (`ytt make`, `ytt style list|show|set|edit|delete`, `ytt library forget`; see "`make`, as built" in section 10).
    Real YouTube downloads and real-size libraries are untested.
-6. The guided menu on top of the same operations (`rich` + `questionary`).
+6. The guided menu on top of the same operations (`rich` + `questionary`). **Done** (`ytt` at a terminal; see "The
+   guided menu, as built" in section 6). Not yet used on a real machine with real downloads.
 7. `research`, `stitch`, `doctor`, `style stingers`; consistent output.
 8. Docs; delete the old scripts; port or replace their tests.
 
@@ -457,6 +484,10 @@ not yet replace them.
   them as downloaded but never compiled them). They are never deleted. Kept as is in step 5.
 - Some old behaviours were found by reading code and tests, not documentation. `--reverse`/`--reverse-each` are settled
   for `make` (section 10, "as built") and covered by `tests/test_groups.py`; the rest are ported with their tests.
+- The menu is tested with scripted answers (exact command lines, validation, Ctrl-C, whole flows against the fake
+  YouTube), with real key presses fed to the real prompts through a pipe, and by hand in a pseudo-terminal; not yet
+  on the user's own terminal. `style edit` still asks its questions as plain typed lines (step 5), not with arrow keys.
+  Research, `stitch`, `doctor` and `style stingers` join the menu in step 7.
 - `make` was tested with compilations of 2 clips of about a second. Large libraries (the first plan probes every unused
   clip once, then `cache/probes.json` remembers) and real-length renders are untested.
 

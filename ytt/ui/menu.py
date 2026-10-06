@@ -317,7 +317,7 @@ class Menu:
         return _whole_number(text) or (None if int(text) >= int(start) else f"That is before place {start}.")
 
     def _filters(self):
-        picked = self.ask.checkbox("Narrow it down? (space ticks, enter continues; nothing ticked = no limits)", [
+        picked = self.ask.checkbox("Narrow it down? (nothing ticked = no limits)", [
             ("Only videos uploaded within certain dates", "dates"),
             ("Only videos with at least a number of views", "views"),
             ("Only videos of a certain length", "length")])
@@ -354,8 +354,7 @@ class Menu:
             choices += [("Also download look-alike re-uploads", "dups"),
                         ("Download again even what I already have", "refetch"),
                         ("The picture quality (tallest picture)", "quality")]
-        picked = self.ask.checkbox("Change anything else? (space ticks, enter continues; nothing ticked = the usual "
-                                   "settings)", choices)
+        picked = self.ask.checkbox("Change anything else? (nothing ticked = the usual settings)", choices)
         cfg = self._read(lambda ws: copy.deepcopy(ws.config))
         argv = []
         for _, key in choices:
@@ -439,7 +438,7 @@ class Menu:
             ("The last one", "last"), ("Pick from a list", "pick"), ("All of them", "all")])
         if which != "pick":
             return which
-        picked = self.ask.checkbox("Which compilations? (space ticks, enter continues)", [
+        picked = self.ask.checkbox("Which compilations?", [
             (f"{c['name']} · {plural(c['clips'], 'clip')} · made {_day(c['made'])} · "
              f"{'video is there' if c['output_exists'] else 'video is gone'}", c["name"])
             for c in reversed(comps)], required=True)
