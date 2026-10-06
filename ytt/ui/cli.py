@@ -13,6 +13,7 @@ from ytt.ops.compile import groups as grp_mod
 from ytt.ops.compile import make as make_mod
 from ytt.ops.compile import remake as remake_mod
 from ytt.ops.compile import style as style_mod
+from ytt.ops.compile import style_ops
 from ytt.ops.errors import OpError
 from ytt.ops.library import views
 from ytt.ops.legacy_import import import_legacy
@@ -22,6 +23,7 @@ from ytt.sources.errors import SourceError
 from ytt.sources.ytdlp import YtDlpBackend
 from ytt.workspace import config as cfgmod
 from ytt.workspace import paths
+from ytt.workspace import store
 from ytt.workspace.errors import WorkspaceError
 from ytt.workspace.workspace import Workspace
 
@@ -128,6 +130,34 @@ def build_parser():
     rm.add_argument("--replace", action="store_true", help="overwrite the old video instead of making a new compilation")
     rm.add_argument("--dry-run", action="store_true", help="show the plan, do nothing")
     rm.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
+
+    stl = sub.add_parser("style", help="how compilations look: transitions, intro, outro, quality",
+                         description="Saved styles. A compilation keeps its own copy of the style it was made with, so "
+                                     "changing or deleting a style never changes compilations already made.")
+    ssub = stl.add_subparsers(dest="verb")
+    sl = ssub.add_parser("list", help="the saved styles (the default)")
+    sw = ssub.add_parser("show", help="all the settings of one style")
+    sw.add_argument("name", metavar="NAME")
+    se = ssub.add_parser("set", help="change settings, e.g.  ytt style set default quality best transition-seconds 0.5",
+                         description="Change one or more settings of a style: NAME KEY VALUE [KEY VALUE ...]. "
+                                     "To make a new style use --new or --from.")
+    se.add_argument("name", metavar="NAME")
+    se.add_argument("pairs", nargs="+", metavar="KEY VALUE", help="a setting and its new value, repeated")
+    newish = se.add_mutually_exclusive_group()
+    newish.add_argument("--new", action="store_true", help="create the style, starting from the built-in look")
+    newish.add_argument("--from", dest="source", metavar="NAME", help="create the style as a copy of this one")
+    se.add_argument("--dry-run", action="store_true", help="show the change, save nothing")
+    se.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
+    ed = ssub.add_parser("edit", help="change a style by answering questions (creates it if it is new)",
+                         description="Asks about each setting; press Enter to keep it, - to clear a text setting. "
+                                     "For scripts use `style set`.")
+    ed.add_argument("name", metavar="NAME")
+    de = ssub.add_parser("delete", help="delete a style")
+    de.add_argument("name", metavar="NAME")
+    de.add_argument("--dry-run", action="store_true", help="show what would happen, delete nothing")
+    de.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
+    for sp in (sl, sw):
+        sp.add_argument("--json", action="store_true", help="machine-readable output")
 
     lib = sub.add_parser("library", help="what you have: clips, compilations, sources",
                          description="Look at what is in the library. With no argument: a summary.")
@@ -586,6 +616,126 @@ def cmd_make(args, root):
         return {"completed": 0, "cancelled": 130}.get(result.status, 1)
 
 
+def _style_lines(name, style, is_default):
+    d = style.to_dict()
+    width = max(len(k) for k in d)
+    head = f"Style '{name}'" + (" (the workspace's default)" if is_default else "")
+    return [head] + [f"  {k.ljust(width)}  {style_ops._shown(v)}" for k, v in d.items()]
+
+
+def _style_list(ws, args):
+    rows = style_ops.list_styles(ws)
+    if args.json:
+        print(json.dumps([{"name": n, "default": d, "settings": st.to_dict() if st else None, "problem": prob}
+                          for n, d, st, prob in rows], indent=2))
+        return 0
+    if not rows:
+        print("No styles yet. `ytt style set NAME quality best --new` makes one.")
+        return 0
+    table = []
+    for name, is_default, st, problem in rows:
+        if st is None:
+            table.append([name, "(not valid)", problem, "", ""])
+            continue
+        table.append([name + (" *" if is_default else ""), st.transition, st.quality,
+                      "yes" if st.intro else "-", "yes" if st.outro else "-"])
+    print(_table(table, ["NAME", "TRANSITION", "QUALITY", "INTRO", "OUTRO"]))
+    print("\n* = the workspace's default style")
+    return 0
+
+
+def _style_show(ws, args):
+    style = style_ops.load(ws, args.name)
+    is_default = args.name == ws.config["default_style"]
+    if args.json:
+        print(json.dumps({"name": args.name, "default": is_default, "settings": style.to_dict()}, indent=2))
+    else:
+        print("\n".join(_style_lines(args.name, style, is_default)))
+    return 0
+
+
+def _style_save(ws, sp, args):
+    """Show a style change, ask, save."""
+    print(render_plan(sp.plan, full=True))
+    if not sp.plan.ok:
+        return 1
+    if not sp.changed:
+        print("\nNothing to do.")
+        return 0
+    if getattr(args, "dry_run", False):
+        print("\n(dry run: nothing was done)")
+        return 0
+    if not _confirm(args):
+        print("Cancelled; nothing was done.")
+        return 0
+    style_ops.run_save(ws, sp)
+    print(f"\nSaved style '{sp.name}'.")
+    return 0
+
+
+def _style_set(ws, args):
+    if len(args.pairs) % 2:
+        raise OpError("style set needs settings in pairs: NAME KEY VALUE [KEY VALUE ...] "
+                      "(for example: ytt style set default quality best).")
+    changes = dict(zip(args.pairs[0::2], args.pairs[1::2]))
+    return _style_save(ws, style_ops.plan_save(ws, args.name, changes, new=args.new, source=args.source), args)
+
+
+def _style_edit(ws, args):
+    if not is_tty():
+        raise OpError("style edit asks questions, so it needs a terminal. In a script use: "
+                      "ytt style set NAME KEY VALUE [KEY VALUE ...]")
+    exists = store.get_style(ws.conn, args.name) is not None
+    current = style_ops.load(ws, args.name).to_dict() if exists else style_mod.Style().to_dict()
+    print(f"{'Editing' if exists else 'New style'} '{args.name}'. Enter keeps a value; - clears a text setting.\n")
+    changes = {}
+    for key in style_ops.keys():
+        while True:
+            answer = input(f"{key} [{style_ops._shown(current[key])}]  ({style_ops.HELP[key]})\n> ").strip()
+            if not answer:
+                break
+            text = "" if answer == "-" else answer
+            try:
+                value = style_ops.parse_value(key, text)
+            except OpError as e:
+                print(f"  {e}")
+                continue
+            if value != current[key]:
+                changes[key] = text
+            break
+    print()
+    from types import SimpleNamespace
+    sp = style_ops.plan_save(ws, args.name, changes, new=not exists)
+    return _style_save(ws, sp, SimpleNamespace(yes=False, dry_run=False))
+
+
+def _style_delete(ws, args):
+    plan = style_ops.plan_delete(ws, args.name)
+    print(render_plan(plan, full=True))
+    if not plan.ok:
+        return 1
+    if args.dry_run:
+        print("\n(dry run: nothing was done)")
+        return 0
+    if not _confirm(args):
+        print("Cancelled; nothing was done.")
+        return 0
+    style_ops.run_delete(ws, args.name, plan)
+    print(f"\nDeleted style '{args.name}'.")
+    return 0
+
+
+def cmd_style(args, root):
+    verb = args.verb or "list"
+    if verb == "list" and not hasattr(args, "json"):
+        args.json = False
+    with Workspace.open(root) as ws:
+        style_mod.ensure_default(ws.conn)
+        ws.conn.commit()
+        return {"list": _style_list, "show": _style_show, "set": _style_set, "edit": _style_edit,
+                "delete": _style_delete}[verb](ws, args)
+
+
 COMMANDS = {"init": cmd_init, "show": cmd_show, "set": cmd_set, "import": cmd_import}
 
 
@@ -605,6 +755,8 @@ def main(argv=None, environ=None):
             return cmd_make(args, root)
         if args.command == "remake":
             return cmd_remake(args, root)
+        if args.command == "style":
+            return cmd_style(args, root)
         if args.command == "library":
             return cmd_library(args, root)
         return COMMANDS[args.action](args, root)

@@ -65,6 +65,15 @@ def _shown(value):
 
 def parse_value(key, text):
     """Text typed by a person -> the value of that style setting. Raises OpError saying what is allowed."""
+    value = _convert(key, text)
+    try:
+        Style.from_dict({key: value})                       # the style's own rules (allowed words, ranges)
+    except StyleError as e:
+        raise OpError(str(e))
+    return value
+
+
+def _convert(key, text):
     default = getattr(Style(), key)
     text = text.strip()
     try:
