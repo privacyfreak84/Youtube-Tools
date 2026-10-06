@@ -74,6 +74,10 @@ def save_style(conn, name, data):
                  (name, json.dumps(data, sort_keys=True), now()))
 
 
+def delete_style(conn, name):
+    conn.execute("DELETE FROM styles WHERE name = ?", (name,))
+
+
 def get_style(conn, name):
     row = conn.execute("SELECT data FROM styles WHERE name = ?", (name,)).fetchone()
     return json.loads(row["data"]) if row else None
