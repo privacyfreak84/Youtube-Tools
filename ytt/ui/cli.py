@@ -9,6 +9,8 @@ from pathlib import Path
 
 from ytt import __version__
 from ytt.ops.compile import fetch as fetch_mod
+from ytt.ops.compile import groups as grp_mod
+from ytt.ops.compile import make as make_mod
 from ytt.ops.compile import remake as remake_mod
 from ytt.ops.compile import style as style_mod
 from ytt.ops.errors import OpError
@@ -22,6 +24,33 @@ from ytt.workspace import config as cfgmod
 from ytt.workspace import paths
 from ytt.workspace.errors import WorkspaceError
 from ytt.workspace.workspace import Workspace
+
+
+def _add_query_flags(p, d, n_in_group):
+    """The flags that choose which videos to get from a channel, shared by `fetch` and `make`. d(value) gives a
+    flag's default: the value itself for fetch, argparse.SUPPRESS for make (so a flag that was typed can be told
+    from one that was not, which `make --like` needs). n_in_group: -n is one of the ways to say how many (fetch);
+    in make it is a separate thing (how many compilations)."""
+    p.add_argument("--type", choices=chan.TABS, default=d("videos"), help="which tab: videos (default) or shorts")
+    p.add_argument("--from", dest="date_from", metavar="DATE", default=d(""), help="uploaded on or after, e.g. 2025-01-31")
+    p.add_argument("--to", dest="date_to", metavar="DATE", default=d(""), help="uploaded on or before")
+    p.add_argument("--min-views", type=int, default=d(0), metavar="N")
+    p.add_argument("--min-length", type=float, default=d(0), metavar="MIN", help="shortest, in minutes")
+    p.add_argument("--max-length", type=float, default=d(0), metavar="MIN", help="longest, in minutes")
+    p.add_argument("--sort", choices=sel.SORTS, default=d("popular"), help="popular (default), latest, oldest, ...")
+    how = p.add_mutually_exclusive_group()
+    how.add_argument("--clips", type=int, default=d(0), metavar="N", help="N NEW clips (not already in the library)")
+    if n_in_group:
+        how.add_argument("-n", dest="compilations", type=int, default=d(0), metavar="N",
+                         help="enough new clips for N full compilations (clips already waiting count)")
+    how.add_argument("--range", default=d(""), metavar="A-B", help="exact positions in the sorted list, e.g. 25-70")
+    how.add_argument("--take", default=d(""), metavar="EXPR", help="advanced: last:20, every:5, random:30, new:60, comps:5")
+    how.add_argument("--videos", metavar="FILE", default=d(None),
+                     help="a list of YouTube ids or links, one per line (- for stdin), instead of a channel")
+    p.add_argument("--keep-duplicates", action="store_true", default=d(False), help="also download look-alike re-uploads")
+    p.add_argument("--refetch", action="store_true", default=d(False), help="download again even videos the library already has")
+    p.add_argument("--max-height", type=int, default=d(0), metavar="PIXELS", help="quality cap (default: the default style's)")
+    p.add_argument("--workers", type=int, default=d(0), metavar="N", help="downloads at once (default: the workspace setting)")
 
 
 def build_parser():
@@ -48,27 +77,46 @@ def build_parser():
                         description="Download clips into the library. Say which channel, how many, and (optionally) "
                                     "which ones. Videos the library already has are never downloaded again.")
     fe.add_argument("channel", nargs="?", default="", metavar="CHANNEL", help="@Name or a channel link")
-    fe.add_argument("--type", choices=chan.TABS, default="videos", help="which tab: videos (default) or shorts")
-    fe.add_argument("--from", dest="date_from", metavar="DATE", default="", help="uploaded on or after, e.g. 2025-01-31")
-    fe.add_argument("--to", dest="date_to", metavar="DATE", default="", help="uploaded on or before")
-    fe.add_argument("--min-views", type=int, default=0, metavar="N")
-    fe.add_argument("--min-length", type=float, default=0, metavar="MIN", help="shortest, in minutes")
-    fe.add_argument("--max-length", type=float, default=0, metavar="MIN", help="longest, in minutes")
-    fe.add_argument("--sort", choices=sel.SORTS, default="popular", help="popular (default), latest, oldest, ...")
-    how = fe.add_mutually_exclusive_group()
-    how.add_argument("--clips", type=int, default=0, metavar="N", help="N NEW clips (not already in the library)")
-    how.add_argument("-n", dest="compilations", type=int, default=0, metavar="N",
-                     help="enough new clips for N full compilations (clips already waiting count)")
-    how.add_argument("--range", default="", metavar="A-B", help="exact positions in the sorted list, e.g. 25-70")
-    how.add_argument("--take", default="", metavar="EXPR", help="advanced: last:20, every:5, random:30, new:60, comps:5")
-    how.add_argument("--videos", metavar="FILE", help="a list of YouTube ids or links, one per line (- for stdin), "
-                                                       "instead of a channel")
-    fe.add_argument("--keep-duplicates", action="store_true", help="also download look-alike re-uploads")
-    fe.add_argument("--refetch", action="store_true", help="download again even videos the library already has")
-    fe.add_argument("--max-height", type=int, default=0, metavar="PIXELS", help="quality cap (default: the default style's)")
-    fe.add_argument("--workers", type=int, default=0, metavar="N", help="downloads at once (default: the workspace setting)")
+    _add_query_flags(fe, lambda v: v, n_in_group=True)
     fe.add_argument("--dry-run", action="store_true", help="show the plan, download nothing")
     fe.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
+
+    mk = sub.add_parser("make", help="fetch clips and make compilations from them",
+                        description="Make compilations. Give a CHANNEL to fetch new clips first (then everything waiting "
+                                    "in the library is used), or none to use the clips already in the library. "
+                                    "Without -n everything that fills a compilation is made; the clips that cannot fill "
+                                    "one are the leftover (see --if-short).")
+    mk.add_argument("channel", nargs="?", default=argparse.SUPPRESS, metavar="CHANNEL", help="@Name or a channel link")
+    _add_query_flags(mk, lambda v: argparse.SUPPRESS, n_in_group=False)
+    mk.add_argument("-n", dest="compilations", type=int, default=argparse.SUPPRESS, metavar="N",
+                    help="make N compilations (with a channel and no --clips/--range/--take, also fetches what is missing)")
+    mk.add_argument("--all", action="store_true", default=argparse.SUPPRESS,
+                    help="no channel: make as many compilations as the clips in the library allow")
+    mk.add_argument("--like", metavar="ID", default=argparse.SUPPRESS,
+                    help="repeat the request that made this compilation (a number, name or 'last') on fresh clips; "
+                         "flags you add override it")
+    mk.add_argument("--style", metavar="NAME", default=argparse.SUPPRESS, help="a saved style (default: the workspace's default)")
+    size = mk.add_mutually_exclusive_group()
+    size.add_argument("--per", type=int, metavar="N", default=argparse.SUPPRESS, help="clips per compilation")
+    size.add_argument("--per-minutes", type=float, metavar="MIN", default=argparse.SUPPRESS, help="or about this many minutes")
+    mk.add_argument("--order", choices=grp_mod.ORDERS, default=argparse.SUPPRESS,
+                    help="which clips come first: name (the order they were fetched in), oldest, newest, random")
+    play = mk.add_mutually_exclusive_group()
+    play.add_argument("--reverse", dest="play", action="store_const", const="reverse", default=argparse.SUPPRESS,
+                      help="play the whole sequence backwards")
+    play.add_argument("--reverse-each", dest="play", action="store_const", const="each", default=argparse.SUPPRESS,
+                      help="play each compilation backwards")
+    mk.add_argument("--if-short", choices=grp_mod.IF_SHORT, default=argparse.SUPPRESS,
+                    help="clips that cannot fill a compilation: keep them for next time (default), make a shorter "
+                         "last one (short), or fetch just enough more to fill one (fetch)")
+    used = mk.add_mutually_exclusive_group()
+    used.add_argument("--delete-used-clips", dest="delete_used", action="store_true", default=argparse.SUPPRESS,
+                      help="delete downloaded clips once they are in a compilation")
+    used.add_argument("--keep-used-clips", dest="delete_used", action="store_false", default=argparse.SUPPRESS)
+    mk.add_argument("--retry-failed", action="store_true", default=argparse.SUPPRESS,
+                    help="try clips that could not be read earlier once more")
+    mk.add_argument("--dry-run", action="store_true", help="show the plan, do nothing")
+    mk.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
 
     rm = sub.add_parser("remake", help="render finished compilations again, with changes",
                         description="Render recorded compilations again from the same clips in the same order. "
@@ -130,7 +178,10 @@ def render_plan(plan, full=True, limit=12):
     out = [plan.title]
     actions = plan.actions
     shown = actions if full or len(actions) <= limit else actions[:limit - 2]
-    out += [f"  {a.text}" for a in shown]
+    for a in shown:
+        out.append(f"  {a.text}")
+        if full:
+            out += [f"      - {line}" for line in a.data.get("lines", [])]
     if len(shown) < len(actions):
         out.append(f"  ... and {len(actions) - len(shown)} more (--dry-run lists them all)")
     for label, items in (("Errors", plan.errors), ("Warnings", plan.warnings), ("Notes", plan.notes)):
@@ -413,6 +464,128 @@ def cmd_library(args, root):
     return 0
 
 
+_FETCH_FLAGS = ("channel", "type", "date_from", "date_to", "min_views", "min_length", "max_length", "sort", "clips",
+                "range", "take", "videos", "keep_duplicates", "refetch", "max_height", "workers")
+_HOW_MANY = ("clips", "range", "take", "videos")
+_PLAIN_FLAGS = ("style", "per", "per_minutes", "order", "play", "if_short", "delete_used", "retry_failed")
+
+
+def make_request_from_args(ws, args):
+    """The command line as a MakeRequest. Only flags that were typed count (the make parser leaves the others out),
+    so with --like they override the recorded request and everything else is kept."""
+    from dataclasses import replace
+    typed = vars(args)
+    like = typed.get("like")
+    request = make_mod.request_like(ws, like) if like else make_mod.MakeRequest()
+    fetch = request.fetch
+    given = {k: typed[k] for k in _FETCH_FLAGS if k in typed}
+    if given:
+        fetch = fetch or fetch_mod.FetchRequest()
+        if any(k in given for k in _HOW_MANY):
+            fetch = replace(fetch, clips=0, compilations=0, range="", take="", videos=None)
+        if "videos" in given:
+            given["videos"] = _read_video_list(given["videos"])
+            fetch = replace(fetch, channel="")
+        elif given.get("channel"):
+            fetch = replace(fetch, videos=None)
+        fetch = replace(fetch, **given)
+    request = replace(request, fetch=fetch)
+    if "compilations" in typed:
+        request = replace(request, compilations=typed["compilations"], everything=False)
+    if typed.get("all"):
+        request = replace(request, everything=True, compilations=0)
+    plain = {k: typed[k] for k in _PLAIN_FLAGS if k in typed}
+    if "per" in typed:                      # a size typed now replaces the other way of saying it (with --like)
+        plain["per_minutes"] = 0
+    elif "per_minutes" in typed:
+        plain["per"] = 0
+    return replace(request, **plain), like
+
+
+def _progress_say():
+    """-> (say, clear): what is being read, on stderr so the plan on stdout stays clean."""
+    stage = [None]
+
+    def say(text):
+        if sys.stderr.isatty():
+            print(f"\r{text}   ", end="", file=sys.stderr, flush=True)
+        elif stage[0] != text.split(" ")[0]:
+            print(text, file=sys.stderr, flush=True)
+        stage[0] = text.split(" ")[0]
+
+    def clear():
+        if sys.stderr.isatty() and stage[0]:
+            print("\r" + " " * 78 + "\r", end="", file=sys.stderr)
+
+    return say, clear
+
+
+def cmd_make(args, root):
+    with Workspace.open(root) as ws:
+        request, like = make_request_from_args(ws, args)
+        backend = make_backend(ws) if request.fetch is not None else None
+        say, clear = _progress_say()
+        if like:
+            print(f"Repeating how {like if not like.isdigit() else 'compilation ' + like} was made; "
+                  f"flags you add on top override it.\n")
+        mp = make_mod.plan_make(ws, request, backend, progress=say)
+        clear()
+        print(render_plan(mp.plan, full=args.dry_run))
+        if not mp.plan.ok:
+            return 1
+        if mp.nothing_to_do:
+            print("\nNothing to do.")
+            return 0
+        if args.dry_run:
+            print("\n(dry run: nothing was done)")
+            return 0
+        if not _confirm(args):
+            print("Cancelled; nothing was done.")
+            return 0
+        shown = {}
+
+        def progress(name, done, total):
+            pct = min(100, int(done * 100 / total)) if total else 0
+            if sys.stdout.isatty():
+                print(f"\r  {name}: {pct}%", end="", flush=True)
+            elif pct // 25 > shown.get(name, -1):
+                shown[name] = pct // 25
+                print(f"  {name}: {pct}%", flush=True)
+
+        def event(outcome, done, target):
+            where = f"#{outcome.job.position} " if outcome.job.position else ""
+            if outcome.status == "completed":
+                print(f"  [{done}/{target}] {where}{_short(outcome.job.label) or outcome.job.video_id}", flush=True)
+            else:
+                print(f"  skipped {where}{_short(outcome.job.label) or outcome.job.video_id}: {outcome.detail}", flush=True)
+
+        print()
+        result = make_mod.run_make(ws, mp, on_progress=progress, backend=backend, on_fetch=event)
+        if sys.stdout.isatty():
+            print()
+        for item in result.items:
+            if item.status == "completed":
+                if item.what in result.made:
+                    print(f"  made {item.what}")
+            else:
+                print(f"  {item.status.upper()} {item.what}" + (f": {item.detail}" if item.detail else ""))
+        c = result.counts
+        bits = [f"{_plural(len(result.made), 'compilation')} made"]
+        if c["downloaded"] or c["adopted"]:
+            bits.append(f"{_plural(c['downloaded'], 'clip')} downloaded"
+                        + (f", {c['adopted']} already on your disk added" if c["adopted"] else ""))
+        if c["deleted"]:
+            bits.append(f"{_plural(c['deleted'], 'used clip')} deleted")
+        print(f"\n{result.status.capitalize()}: {', '.join(bits)} (run {result.run_id}).")
+        if result.made:
+            print(f"  Compilations are in {ws.compilations_dir}")
+        if c["left_over"]:
+            print(f"  {_plural(c['left_over'], 'clip')} left over, kept for the next make.")
+        if result.status == "partial":
+            print("  Not everything was done; run the same command again to try for the rest.")
+        return {"completed": 0, "cancelled": 130}.get(result.status, 1)
+
+
 COMMANDS = {"init": cmd_init, "show": cmd_show, "set": cmd_set, "import": cmd_import}
 
 
@@ -428,6 +601,8 @@ def main(argv=None, environ=None):
     try:
         if args.command == "fetch":
             return cmd_fetch(args, root)
+        if args.command == "make":
+            return cmd_make(args, root)
         if args.command == "remake":
             return cmd_remake(args, root)
         if args.command == "library":
