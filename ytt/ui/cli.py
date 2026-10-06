@@ -15,6 +15,7 @@ from ytt.ops.compile import remake as remake_mod
 from ytt.ops.compile import style as style_mod
 from ytt.ops.compile import style_ops
 from ytt.ops.errors import OpError
+from ytt.ops.library import forget as forget_mod
 from ytt.ops.library import views
 from ytt.ops.legacy_import import import_legacy
 from ytt.sources import channel as chan
@@ -172,6 +173,12 @@ def build_parser():
     lr.add_argument("--limit", type=int, default=10)
     for sp in (lib, *lsub.choices.values()):
         sp.add_argument("--json", action="store_true", help="machine-readable output")
+    lf = lsub.add_parser("forget", help="take compilations out of the records so their clips can be used again",
+                         description="Forget compilations: their clips go back into the pool for the next make. The "
+                                     "video files are not touched. TARGETS: last, all, a number, a name or a list (1,3).")
+    lf.add_argument("targets", metavar="TARGETS")
+    lf.add_argument("--dry-run", action="store_true", help="show what would happen, change nothing")
+    lf.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
     return ap
 
 
@@ -451,9 +458,26 @@ def cmd_remake(args, root):
         return {"completed": 0, "cancelled": 130}.get(result.status, 1)
 
 
+def _library_forget(ws, args):
+    fp = forget_mod.plan_forget(ws, args.targets)
+    print(render_plan(fp.plan, full=True))
+    if args.dry_run:
+        print("\n(dry run: nothing was done)")
+        return 0
+    if not _confirm(args):
+        print("Cancelled; nothing was done.")
+        return 0
+    result = forget_mod.run_forget(ws, fp)
+    print(f"\nForgot {_plural(result.counts['forgotten'], 'compilation')}; "
+          f"{_plural(result.counts['available'], 'clip')} can be used again (run {result.run_id}).")
+    return 0
+
+
 def cmd_library(args, root):
     what = args.what or "stats"
     with Workspace.open(root) as ws:
+        if what == "forget":
+            return _library_forget(ws, args)
         if what == "stats":
             data = views.stats(ws)
             if args.json:
