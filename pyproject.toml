@@ -7,7 +7,7 @@ name = "ytt"
 version = "0.1.0"
 description = "Research YouTube and make compilations."
 requires-python = ">=3.11"
-dependencies = ["questionary>=2.0"]
+dependencies = ["questionary>=2.0", "rich>=13"]
 
 [project.scripts]
 ytt = "ytt.ui.cli:main"

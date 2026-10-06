@@ -35,6 +35,49 @@ class CliTest(unittest.TestCase):
         return old
 
 
+class TTYStringIO(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class FrontDoorTests(CliTest):
+    def test_without_a_terminal_bare_ytt_prints_help_and_never_asks_anything(self):
+        from unittest import mock
+        from ytt.ui import cli
+        with mock.patch.object(cli, "start_menu") as menu:
+            code, out, _ = self.run_cli()
+        self.assertEqual(code, 0)
+        self.assertIn("usage: ytt", out)
+        menu.assert_not_called()
+
+    def test_at_a_terminal_bare_ytt_starts_the_menu_in_the_chosen_workspace(self):
+        from unittest import mock
+        from ytt.ui import cli
+        out = TTYStringIO()
+        with mock.patch.object(cli, "is_tty", lambda: True), mock.patch.object(cli, "start_menu", return_value=7) as menu, \
+                contextlib.redirect_stdout(out):
+            code = cli.main(["--workspace", str(self.root)])
+        self.assertEqual(code, 7)
+        self.assertEqual(menu.call_args[0][0].workspace, str(self.root))
+
+    def test_the_menu_is_built_for_the_workspace_and_runs_commands_through_run_argv(self):
+        from unittest import mock
+        from ytt.ui import cli, menu as menu_mod
+        seen = {}
+
+        class Fake:
+            def __init__(self, root, run, ask, workspace_flag=None):
+                seen.update(root=root, run=run, flag=workspace_flag)
+
+            def start(self):
+                return seen["run"](["workspace", "init"])
+
+        with mock.patch.object(menu_mod, "Menu", Fake), contextlib.redirect_stdout(io.StringIO()):
+            code = cli.start_menu(cli.build_parser().parse_args(["--workspace", str(self.root)]))
+        self.assertEqual((code, seen["root"], seen["flag"]), (0, self.root, str(self.root)))
+        self.assertTrue((self.root / "ytt.db").exists())
+
+
 class RunArgvTests(CliTest):
     """run_argv is how the guided menu runs a command: a list of words, the same parser and commands as main()."""
 

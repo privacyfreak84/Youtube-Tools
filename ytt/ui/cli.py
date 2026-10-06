@@ -795,10 +795,30 @@ def run_argv(argv, root):
     return dispatch(args, root)
 
 
+def start_menu(args, environ=None):
+    """The guided front door (ytt/ui/menu.py). Its libraries are only loaded here, so every other command works
+    without them."""
+    try:
+        from ytt.ui.menu import Menu
+        from ytt.ui.prompts import QuestionaryPrompter
+    except ImportError as e:
+        print(f"The guided menu needs the 'questionary' and 'rich' packages ({e}).\n"
+              f"Install them with: pip install questionary rich\nThe commands still work: ytt --help", file=sys.stderr)
+        return 1
+    root = paths.resolve(args.workspace, os.environ if environ is None else environ)
+    try:
+        return Menu(root, lambda words: run_argv(words, root), QuestionaryPrompter(),
+                    workspace_flag=args.workspace).start()
+    except KeyboardInterrupt:
+        return 130
+
+
 def main(argv=None, environ=None):
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.command is None:
+        if is_tty() and sys.stdout.isatty():               # a person at a terminal: ask questions; a script: help
+            return start_menu(args, environ)
         ap.print_help()
         return 0
     if args.command == "workspace" and args.action is None:
