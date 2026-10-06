@@ -62,6 +62,7 @@ class FetchPlan:
     target: int = 0                                # how many downloads must succeed
     adopt: list = field(default_factory=list)      # [(VideoInfo, Path)]: already on the disk, to be added to the library
     meta: dict = field(default_factory=dict)       # youtube id -> VideoInfo (what the channel list said)
+    spare: int = 0                                 # new videos beyond the target that a fill selection could still draw on
     source: str = ""
     max_height: int = 1080
     workers: int = 3
@@ -287,6 +288,7 @@ def plan_fetch(ws, request, backend, progress=None):
             picked = candidates[:count]
             queue = candidates if picked else []
             fp.target = len(picked)
+            fp.spare = len(candidates) - len(picked)
             if count == 0:
                 plan.notes.append("Already enough clips are waiting in your library, so nothing needs downloading.")
             elif not candidates:
@@ -410,14 +412,11 @@ def _record(ws, source_id, meta, outcome, origin="fetched"):
     ws.conn.commit()
 
 
-def run_fetch(ws, fp, backend, on_event=None):
-    """Carry out a plan that has no errors. Each clip is recorded as soon as its file is complete, so a crash or
-    Ctrl-C keeps everything that finished. on_event(outcome, done, target) is told about every download."""
-    if not fp.plan.ok:
-        raise OpError("The plan has errors; nothing was done.")
+def execute_fetch(ws, fp, backend, on_event=None):
+    """The doing part of a fetch, without a run of its own (`make` runs it inside its own run) -> (items, counts,
+    cancelled). Each clip is recorded as soon as its file is complete, so a crash or Ctrl-C keeps everything that
+    finished. on_event(outcome, done, target) is told about every download."""
     conn = ws.conn
-    run_id = store.create_run(conn, "fetch", asdict(fp.request), fp.plan.to_dict())
-    conn.commit()                                           # a crash from here on still leaves the run on record
     items, counts = [], {"downloaded": 0, "adopted": 0, "failed": 0}
     cancelled = False
     source_id = None
@@ -457,12 +456,28 @@ def run_fetch(ws, fp, backend, on_event=None):
         conn.rollback()
         left = fp.target - counts["downloaded"]
         items.append(Item("the rest", "cancelled", f"stopped by the user; {left} of {fp.target} downloads not finished"))
+    return items, counts, cancelled
+
+
+def fetch_status(fp, counts, cancelled):
+    """How a fetch ended: completed when the number asked for arrived (failures on the way were replaced),
+    partial when fewer arrived, failed when none did."""
     if cancelled:
-        status = CANCELLED
-    elif counts["downloaded"] >= fp.target:
-        status = COMPLETED
-    else:
-        status = PARTIAL if counts["downloaded"] else FAILED
+        return CANCELLED
+    if counts["downloaded"] >= fp.target:
+        return COMPLETED
+    return PARTIAL if counts["downloaded"] else FAILED
+
+
+def run_fetch(ws, fp, backend, on_event=None):
+    """Carry out a plan that has no errors, as a run of its own."""
+    if not fp.plan.ok:
+        raise OpError("The plan has errors; nothing was done.")
+    conn = ws.conn
+    run_id = store.create_run(conn, "fetch", asdict(fp.request), fp.plan.to_dict())
+    conn.commit()                                           # a crash from here on still leaves the run on record
+    items, counts, cancelled = execute_fetch(ws, fp, backend, on_event)
+    status = fetch_status(fp, counts, cancelled)
     store.finish_run(conn, run_id, status, [asdict(i) for i in items])
     conn.commit()
     return RunResult(run_id, status, items, [], counts)

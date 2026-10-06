@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ytt.engine import stitch
 from ytt.engine.stitch import EngineError
+from ytt.ops.compile import common
 from ytt.ops.compile import fetch as fetch_mod
 from ytt.ops.compile import render as render_mod
 from ytt.ops.compile.style import Style, StyleError
@@ -111,17 +112,6 @@ def choose_style(ws, row, wanted):
         raise OpError(f"That style is not valid: {e}")
 
 
-def _next_numbers(ws, count):
-    prefix = ws.config["make"]["prefix"]
-    pattern = re.compile(rf"^{re.escape(prefix)}_(\d+)$")
-    used = [int(m.group(1)) for n in store.compilation_names(ws.conn) if (m := pattern.match(n))]
-    folder = ws.compilations_dir
-    if folder.is_dir():
-        used += [int(m.group(1)) for p in folder.iterdir() if (m := pattern.match(p.stem))]
-    start = max(used, default=0) + 1
-    return [f"{prefix}_{n:03d}" for n in range(start, start + count)]
-
-
 def _clip_refs(ws, row, reverse):
     refs = []
     for r in store.compilation_clips(ws.conn, row["id"]):
@@ -181,7 +171,7 @@ def plan_remake(ws, request):
         plan.errors.append(str(e))
         return rp
 
-    new_names = [] if request.replace else _next_numbers(ws, len(rows))
+    new_names = [] if request.replace else common.next_names(ws, len(rows))
     out_dir = ws.compilations_dir
     skipped = []
     total_seconds = 0.0
