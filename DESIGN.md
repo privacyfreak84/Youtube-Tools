@@ -137,7 +137,7 @@ ytt                       guided front door
 ytt make [@chan]          fetch what is missing, then compile
 ytt fetch [@chan]         only get clips into the library
 ytt remake ID             render a recorded compilation again, with changes
-ytt library [clips|compilations|sources|stats]
+ytt library [clips|compilations|sources|stats|runs|forget]
 ytt style [list|show|edit|set|delete|stingers]
 ytt research <channels|outliers|table|live|tags|niche|clip> ...
 ytt stitch FILES... -o OUT      expert utility: join any videos (not part of the normal flow)
@@ -248,6 +248,39 @@ all be recovered is skipped and the others go ahead (today's behaviour).
 **`make --like ID`** is a different thing, with a narrow meaning: *run the same make request again* (same source,
 filters, sort, count, style), resolved against the library as it is now, so clips already used are not taken again.
 It is today's `--again`. It does not mean "something similar" in any looser sense.
+
+**`make`, as built (step 5).** `ytt make [CHANNEL]` is a fetch and a compile in one run (one row in `runs`).
+
+- *How many.* `-n N` makes at most N compilations; with a channel and no `--clips/--range/--take` it also fetches what
+  is missing for them. With a channel and `--clips N` (or `--range`, `--take`, `--videos`) everything that fills a
+  compilation is made, the clips already waiting included. With no channel, `-n N` or `--all` (as many as the library
+  allows) is required; otherwise it asks "How many compilations?" and stops.
+- *Size and order.* `--per N` or `--per-minutes M` (the workspace's size otherwise); `--order name|oldest|newest|random`
+  (`name` = the order they were fetched in; random draws a seed that is recorded); `--reverse` plays the whole pool
+  backwards and `--reverse-each` each compilation backwards. Both apply after ordering and before cutting, and have
+  nothing to do with which clips were fetched. Resolved the old open question about `--reverse` with `--take`.
+- *Leftover.* Clips that cannot fill a compilation: `--if-short keep` (default; they wait for the next make), `short`
+  (a last, shorter compilation, never from one clip) or `fetch` (fetch just enough more to fill one; needs a channel).
+  Reaching `-n N` leaves spare clips, not leftover.
+- *Used clips.* `--delete-used-clips` / `--keep-used-clips` (else the workspace setting) deletes only clips ytt
+  downloaded, only after the run, never when it was cancelled; the clip stays in the library as `missing`, so `remake`
+  can fetch it again. Clips found on the disk or imported are never deleted.
+- *Unreadable clips.* A clip ffprobe cannot read is marked `failed` and left out; `--retry-failed` (the old
+  `--retry-bad`) tries it again and clears the mark if it works.
+- *The plan is a projection when downloads are involved.* The compilations are cut again from the library after the
+  downloads, so they can differ if a download fails and the next video takes its place. The plan says so. Without a
+  terminal and without `--yes` it refuses; `--dry-run` lists every clip of every compilation.
+- *Status.* `completed` when everything promised was done (fewer videos than asked for, said in the plan, is fine);
+  `partial` when a download or a render fell short; `failed` when nothing was done; `cancelled` on Ctrl-C (exit 130),
+  keeping every finished download and compilation.
+- *`--like ID`* takes the recorded request (ID: number, name or `last`; for a remade compilation it follows the
+  "remade from" links back to the make). Flags typed with it override; a typed `--clips/--range/--take/--videos`
+  replaces the recorded selection; the random seed is drawn again. Imported compilations have no request and are refused.
+- *`style`*: `list`, `show`, `set NAME KEY VALUE [KEY VALUE ...]` (`--new` or `--from NAME` creates; a typo in a name
+  never creates a style), `edit NAME` (prompts, needs a terminal, creates a new style), `delete NAME` (the workspace's
+  default cannot be deleted). Compilations keep their own snapshot, so a style change never touches finished work.
+- *`library forget TARGETS`* is the old `--forget`: the compilations' records are removed so their clips can be used
+  again (unless another compilation uses them or the file is gone). The video file is never touched.
 
 ## 11. Library
 
@@ -402,7 +435,9 @@ removed in one commit.
    `remake` fetch missing clips again. **Done** (`ytt fetch`; `ytt/sources`; migration 3 adds clip origin; `remake`
    fetches gone clips again under their recorded names, skips a compilation whose clips cannot be fetched, and
    deletes the re-fetched clips again when delete-used-clips is on). Real YouTube downloads are untested.
-5. `make` (the full pipeline with validation and plans), `make --like`, and `style` commands.
+5. `make` (the full pipeline with validation and plans), `make --like`, and `style` commands. **Done**
+   (`ytt make`, `ytt style list|show|set|edit|delete`, `ytt library forget`; see "`make`, as built" in section 10).
+   Real YouTube downloads and real-size libraries are untested.
 6. The guided menu on top of the same operations (`rich` + `questionary`).
 7. `research`, `stitch`, `doctor`, `style stingers`; consistent output.
 8. Docs; delete the old scripts; port or replace their tests.
@@ -419,9 +454,11 @@ not yet replace them.
   selection; what real YouTube returns (list fields, rough dates, 403s, rate limits) is unverified until run on the
   user's machine.
 - Videos found in a `watch_folders` entry are now library clips and can be used in compilations (the old tool counted
-  them as downloaded but never compiled them). They are never deleted. Revisit in step 5 if that is not wanted.
-- Some old behaviours were found by reading code and tests, not documentation (for example exactly how `--reverse`
-  and `--reverse-each` combine with `--take`). Each is ported together with its existing test.
+  them as downloaded but never compiled them). They are never deleted. Kept as is in step 5.
+- Some old behaviours were found by reading code and tests, not documentation. `--reverse`/`--reverse-each` are settled
+  for `make` (section 10, "as built") and covered by `tests/test_groups.py`; the rest are ported with their tests.
+- `make` was tested with compilations of 2 clips of about a second. Large libraries (the first plan probes every unused
+  clip once, then `cache/probes.json` remembers) and real-length renders are untested.
 
 ## 22. Open questions
 
