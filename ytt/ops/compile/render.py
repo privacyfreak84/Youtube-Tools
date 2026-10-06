@@ -8,10 +8,10 @@ from ytt.engine.stitch import RenderSpec
 QUALITY = {"fast": ("veryfast", 21), "balanced": ("medium", 18), "best": ("slow", 16)}     # x264 preset, crf
 
 
-def spec_for(style, clip_paths, output, seed=None):
+def spec_for(style, clip_paths, output, seed=None, probe=stitch.probe):
     """The output size and frame rate are whatever most of the clips use (not the intro, not an odd first clip).
     Raises EngineError if a clip cannot be read."""
-    infos = [stitch.probe(p) for p in clip_paths]
+    infos = [probe(p) for p in clip_paths]
     size = Counter((c.width, c.height) for c in infos).most_common(1)[0][0]
     fps = Counter(str(c.fps) for c in infos).most_common(1)[0][0]
     files = ([Path(style.intro)] if style.intro else []) + [Path(p) for p in clip_paths] \
