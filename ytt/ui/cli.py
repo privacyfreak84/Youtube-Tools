@@ -763,15 +763,8 @@ def cmd_style(args, root):
 COMMANDS = {"init": cmd_init, "show": cmd_show, "set": cmd_set, "import": cmd_import}
 
 
-def main(argv=None, environ=None):
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.command is None:
-        ap.print_help()
-        return 0
-    if args.command == "workspace" and args.action is None:
-        ap.parse_args(["workspace", "--help"])
-    root = paths.resolve(args.workspace, os.environ if environ is None else environ)
+def dispatch(args, root):
+    """Run one parsed command. The errors a person can cause become a message and exit code 1; Ctrl-C exit code 130."""
     try:
         if args.command == "fetch":
             return cmd_fetch(args, root)
@@ -790,6 +783,28 @@ def main(argv=None, environ=None):
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
         return 130
+
+
+def run_argv(argv, root):
+    """Run a command given as a list of words, exactly as if it had been typed after `ytt`. The guided menu builds
+    such lists, so a menu answer and a flag are the same thing and go through the same parser and command."""
+    try:
+        args = build_parser().parse_args(["--workspace", str(root), *argv])
+    except SystemExit as e:                 # argparse already printed what is wrong
+        return e.code if isinstance(e.code, int) else 2
+    return dispatch(args, root)
+
+
+def main(argv=None, environ=None):
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    if args.command is None:
+        ap.print_help()
+        return 0
+    if args.command == "workspace" and args.action is None:
+        ap.parse_args(["workspace", "--help"])
+    root = paths.resolve(args.workspace, os.environ if environ is None else environ)
+    return dispatch(args, root)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,32 @@ class CliTest(unittest.TestCase):
         return old
 
 
+class RunArgvTests(CliTest):
+    """run_argv is how the guided menu runs a command: a list of words, the same parser and commands as main()."""
+
+    def test_it_runs_a_command_given_as_words(self):
+        from ytt.ui.cli import run_argv
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(run_argv(["workspace", "init"], self.root), 0)
+        self.assertIn("Created workspace", out.getvalue())
+        self.assertTrue((self.root / "ytt.db").exists())
+
+    def test_it_uses_the_workspace_it_is_given_and_reports_errors_as_main_does(self):
+        from ytt.ui.cli import run_argv
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(run_argv(["workspace", "show"], self.root), 1)
+        self.assertIn("ytt workspace init", err.getvalue())
+
+    def test_a_command_line_the_parser_rejects_gives_exit_code_2_and_does_not_raise(self):
+        from ytt.ui.cli import run_argv
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(run_argv(["make", "--no-such-flag"], self.root), 2)
+        self.assertIn("--no-such-flag", err.getvalue())
+
+
 class WorkspaceCommandTests(CliTest):
     def test_init_creates_the_workspace_with_a_default_style_and_is_repeatable(self):
         code, out, _ = self.run_cli("workspace", "init")
