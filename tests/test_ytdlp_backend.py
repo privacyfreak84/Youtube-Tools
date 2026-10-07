@@ -136,6 +136,29 @@ class YtDlpTests(unittest.TestCase):
         FakeYoutubeDL.error = RuntimeError("blocked")
         self.assertIsNone(self.backend.probe_date("aaaaaaaaaaa"))                  # never raises: the caller falls back
 
+    def test_searching_collects_the_channels_behind_the_results(self):
+        FakeYoutubeDL.info = {"entries": [
+            {"channel_id": "UC1", "channel": "One", "channel_url": "https://www.youtube.com/channel/UC1"},
+            {"channel_id": "UC2", "uploader": "Two"},                                  # no address: built from the id
+            {"channel": "NoAddress"}, {"channel_id": "UC3"}, None]}
+        found = self.backend.search_channels("cute cats", 5)
+        self.assertEqual([(c.key, c.name, c.url) for c in found],
+                         [("UC1", "One", "https://www.youtube.com/channel/UC1"), ("UC2", "Two", "https://www.youtube.com/channel/UC2")])
+        self.assertEqual(FakeYoutubeDL.instances[0].calls, [("ytsearch5:cute cats", False)])
+        FakeYoutubeDL.error = RuntimeError("HTTP Error 429\nmore")
+        with self.assertRaisesRegex(SourceError, "ytsearch5:cute cats.*429"):
+            self.backend.search_channels("cute cats", 5)
+
+    def test_the_channels_a_channel_features_are_read_from_its_channels_tab(self):
+        FakeYoutubeDL.info = {"entries": [{"id": "UC9", "title": "Nine", "url": "https://www.youtube.com/@nine"},
+                                          {"channel_id": "UC8", "channel": "Eight"}, {"title": "no id or url"}]}
+        found = self.backend.featured_channels("https://www.youtube.com/@Chan")
+        self.assertEqual([(c.key, c.name, c.url) for c in found],
+                         [("UC9", "Nine", "https://www.youtube.com/@nine"), ("UC8", "Eight", "https://www.youtube.com/channel/UC8")])
+        self.assertEqual(FakeYoutubeDL.instances[0].calls, [("https://www.youtube.com/@Chan/channels", False)])
+        FakeYoutubeDL.info = None
+        self.assertEqual(self.backend.featured_channels("https://www.youtube.com/@Chan"), [])
+
     def test_a_videos_own_page_gives_exact_date_length_and_views(self):
         FakeYoutubeDL.info = {"id": "other", "title": "T", "view_count": 9, "duration": 15.5, "upload_date": "20260301"}
         v = self.backend.video_info("aaaaaaaaaaa")

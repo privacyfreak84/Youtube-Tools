@@ -27,6 +27,8 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(ch.base_channel_url("@Chan"), "https://www.youtube.com/@Chan")
         self.assertEqual(ch.base_channel_url(" @Chan/ "), "https://www.youtube.com/@Chan")
         self.assertEqual(ch.base_channel_url("https://www.youtube.com/@Chan/shorts"), "https://www.youtube.com/@Chan")
+        self.assertEqual(ch.base_channel_url("https://www.youtube.com/@Chan/channels"), "https://www.youtube.com/@Chan")
+        self.assertEqual(ch.base_channel_url("https://www.youtube.com/@Chan/about"), "https://www.youtube.com/@Chan")
         self.assertEqual(ch.base_channel_url("https://www.youtube.com/channel/UCabc/videos/"),
                          "https://www.youtube.com/channel/UCabc")
 

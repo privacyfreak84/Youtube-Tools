@@ -27,3 +27,12 @@ class ChannelTab:
     subs: int = None
     verified: bool = None
     videos: list = field(default_factory=list)
+
+
+@dataclass
+class ChannelRef:
+    """A channel found by a search or on another channel's Channels tab. `key` is how two finds of the same channel
+    are recognised (the channel id when YouTube gave one, otherwise the address)."""
+    key: str
+    name: str
+    url: str

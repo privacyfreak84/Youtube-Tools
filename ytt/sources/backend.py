@@ -12,6 +12,12 @@ class Backend(Protocol):
         verified flag -> ChannelTab. `limit` keeps only the newest N. A tab the channel doesn't have gives an empty
         ChannelTab. Raises SourceError when the page can't be read."""
 
+    def search_channels(self, query, count):
+        """The channels behind the first `count` YouTube search results for `query` -> [ChannelRef]. Raises SourceError."""
+
+    def featured_channels(self, base_url):
+        """The channels a channel features on its own Channels tab -> [ChannelRef] (empty when it has none)."""
+
     def video_info(self, video_id):
         """Everything one video's own page says: exact upload date, length, views -> VideoInfo, or None when it can't
         be read. Never raises (the caller keeps what it already had)."""

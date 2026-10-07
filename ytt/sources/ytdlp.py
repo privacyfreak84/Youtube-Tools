@@ -3,7 +3,7 @@ kept small; what it does against real YouTube can only be checked on a machine t
 from datetime import datetime, timezone
 
 from ytt.sources.errors import DownloadStopped, SourceError
-from ytt.sources.models import ChannelTab, VideoInfo
+from ytt.sources.models import ChannelRef, ChannelTab, VideoInfo
 
 
 def _yt_dlp():
@@ -81,6 +81,32 @@ class YtDlpBackend:
         return ChannelTab(name=info.get("channel") or info.get("uploader") or base_url,
                           subs=info.get("channel_follower_count"), verified=info.get("channel_is_verified"),
                           videos=self._videos(info, tab))
+
+    def search_channels(self, query, count):
+        info = self._flat(f"ytsearch{int(count)}:{query}")
+        out = []
+        for e in (info or {}).get("entries") or []:
+            if not e:
+                continue
+            cid = e.get("channel_id")
+            name = e.get("channel") or e.get("uploader")
+            url = e.get("channel_url") or (f"https://www.youtube.com/channel/{cid}" if cid else None)
+            if url and name:
+                out.append(ChannelRef(key=cid or url, name=name, url=url))
+        return out
+
+    def featured_channels(self, base_url):
+        info = self._flat(f"{base_url}/channels")
+        out = []
+        for e in (info or {}).get("entries") or []:
+            if not e:
+                continue
+            cid = e.get("channel_id") or e.get("id")
+            name = e.get("channel") or e.get("title") or e.get("uploader")
+            url = e.get("url") or (f"https://www.youtube.com/channel/{cid}" if cid else None)
+            if url and name:
+                out.append(ChannelRef(key=cid or url, name=name, url=url))
+        return out
 
     def video_info(self, video_id):
         yt_dlp = _yt_dlp()

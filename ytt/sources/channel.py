@@ -10,7 +10,7 @@ def base_channel_url(channel):
     """'@Name', 'Name' or a channel link (also one that ends in /videos or /shorts) -> the channel's own address."""
     channel = channel.strip().rstrip("/")
     url = channel if channel.startswith("http") else f"https://www.youtube.com/{channel}"
-    for tab in (*TABS, "streams", "featured"):
+    for tab in (*TABS, "streams", "featured", "channels", "about"):
         if url.endswith(f"/{tab}"):
             return url[: -len(tab) - 1]
     return url

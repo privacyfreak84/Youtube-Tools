@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ytt.sources.errors import DownloadStopped, SourceError
-from ytt.sources.models import ChannelTab, VideoInfo
+from ytt.sources.models import ChannelRef, ChannelTab, VideoInfo
 
 try:
     from test_auto_compile import template_clip
@@ -36,6 +36,9 @@ class FakeBackend:
         self.tab_errors = {}            # (base_url, tab) -> message: channel_tab raises SourceError
         self.tabs_read = []             # (base_url, tab, limit) of every channel_tab call
         self.dates = {}                 # video id -> date that probe_date answers (before looking at the listings)
+        self.searches = {}              # query -> [ChannelRef] that search_channels answers (a str value raises SourceError)
+        self.searched = []              # (query, count) of every search_channels call
+        self.featured = {}              # base_url -> [ChannelRef] that featured_channels answers (a str value raises)
         self.infos = {}                 # video id -> VideoInfo that video_info answers
         self.infos_read = []            # video ids of every video_info call
         self.list_error = None
@@ -56,6 +59,19 @@ class FakeBackend:
             return ChannelTab()
         videos = list(ch["tabs"].get(tab, []))
         return ChannelTab(ch.get("name"), ch.get("subs"), ch.get("verified"), videos[:limit] if limit else videos)
+
+    def search_channels(self, query, count):
+        self.searched.append((query, count))
+        found = self.searches.get(query, [])
+        if isinstance(found, str):
+            raise SourceError(found)
+        return list(found)[:count]
+
+    def featured_channels(self, base_url):
+        found = self.featured.get(base_url, [])
+        if isinstance(found, str):
+            raise SourceError(found)
+        return list(found)
 
     def video_info(self, video_id):
         self.infos_read.append(video_id)
