@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from ytt.ops.research import channels as channels_mod
+from ytt.ops.research import live as live_mod
 from ytt.ops.research import outliers as outliers_mod
 from ytt.ops.research import table as table_mod
 from ytt.ops.research.common import parse_channel_list, utc_now
@@ -18,6 +19,7 @@ from ytt.workspace.errors import WorkspaceError
 
 TOOLS = {
     "channels": "find channels by search or from another channel's Channels tab",
+    "live": "which streams are live right now on these channels",
     "outliers": "videos that do far better than their own channel's usual",
     "table": "a channel's videos as a table: views, date, length",
 }
@@ -66,6 +68,15 @@ def add_parser(sub):
     c.add_argument("--with-subs", action="store_true", help="also look up subscribers and the verified badge (one request per channel)")
     group = _common(c, ids=False)
     group.add_argument("--urls-only", action="store_true", help="only the channel links, one per line")
+
+    lv = rsub.add_parser("live", help=TOOLS["live"],
+                         description="Find the streams that are live right now. Live and upcoming streams are listed before "
+                                     "past ones, so only the first few entries of each channel's streams tab are checked.")
+    lv.add_argument("channels", nargs="+", metavar="CHANNEL", help="@handles, names or links (a link ending in /live reads the live tab)")
+    lv.add_argument("--limit", type=int, default=live_mod.DEFAULT_LIMIT,
+                    help=f"entries to check per channel (default {live_mod.DEFAULT_LIMIT}; 0 = the whole tab)")
+    lv.add_argument("--out-dir", metavar="DIR", help="also keep one JSON file per channel in this folder (the old live_extractor output)")
+    _common(lv)
 
     o = rsub.add_parser("outliers", help=TOOLS["outliers"],
                         description="Find videos that sit well above their own channel's baseline (the channel's "
@@ -205,6 +216,39 @@ def research_channels(args, root):
     return 0
 
 
+LIVE_CSV = ["title", "channel", "url", "concurrent_view_count", "view_count", "id"]
+
+
+def _live_row(s):
+    return {"id": s.id, "title": s.title, "channel": s.channel, "url": s.url,
+            "concurrent_view_count": s.viewers, "view_count": s.views}
+
+
+def research_live(args, root):
+    result = live_mod.find_live(live_mod.LiveRequest(channels=args.channels, limit=args.limit), make_backend(args, root), on_progress=_say)
+    if args.out_dir:
+        folder = Path(args.out_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        for c in result.channels:
+            data = {"channel_url": c.channel_url, "live_count": len(c.streams),
+                    "streams": [{k: v for k, v in _live_row(s).items() if k != "id"} for s in c.streams]}
+            path = folder / live_mod.file_name(c.channel_url)
+            path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            print(f"Wrote {path}", file=sys.stderr)
+    streams = result.streams
+    if not streams:
+        for note in result.notes:
+            print(f"  ({note})", file=sys.stderr)
+        print("No live streams right now.", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"results": [], "ids": [], "notes": result.notes}, indent=2))
+        return 1
+    _emit(args, [_live_row(s) for s in streams], _unique(s.id for s in streams), result.notes, LIVE_CSV,
+          lambda: print(table([[s.title[:70], s.channel[:25], count(s.viewers), s.url] for s in streams],
+                              ["Title", "Channel", "Watching", "URL"])))
+    return 0
+
+
 def _duration(seconds):
     if seconds is None:
         return "N/A"
@@ -247,7 +291,7 @@ def research_table(args, root):
     return 0
 
 
-RUNNERS = {"channels": research_channels, "outliers": research_outliers, "table": research_table}
+RUNNERS = {"channels": research_channels, "live": research_live, "outliers": research_outliers, "table": research_table}
 
 
 def cmd_research(args, root):

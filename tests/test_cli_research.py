@@ -327,6 +327,67 @@ class ChannelsCliTest(ResearchCliTest):
         self.assertIn("(search failed for 'bad': could not read ytsearch30:bad (429))", err)
 
 
+class LiveCliTest(ResearchCliTest):
+    def setUp(self):
+        super().setUp()
+        from ytt.sources.models import LiveInfo
+        self.streams = "https://www.youtube.com/@Chan/streams"
+        vid = lambda x: x.ljust(11, "_")
+        self.backend.listings[self.streams] = [VideoInfo(id=vid("l1"), title="Now"), VideoInfo(id=vid("old"), title="Past")]
+        self.backend.lives = {vid("l1"): LiveInfo(vid("l1"), "Big stream", "Chan", f"https://www.youtube.com/watch?v={vid('l1')}", 12_345, 99_000)}
+
+    def test_the_table_shows_title_channel_watching_and_link(self):
+        code, out, err = self.run_cli("live", "@Chan")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines()[0].split(), ["Title", "Channel", "Watching", "URL"])
+        self.assertRegex(out.splitlines()[2], r"^Big stream\s+Chan\s+12\.3K\s+https://www\.youtube\.com/watch\?v=l1_+$")
+        self.assertIn("checking https://www.youtube.com/@Chan/streams", err)
+
+    def test_nobody_live_is_a_message_and_exit_1_with_empty_json_when_asked(self):
+        self.backend.lives = {}
+        code, out, err = self.run_cli("live", "@Chan")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("No live streams right now.", err)
+        code, out, _ = self.run_cli("live", "@Chan", "--json")
+        self.assertEqual(json.loads(out), {"results": [], "ids": [], "notes": []})
+
+    def test_json_and_ids_and_csv(self):
+        path = self.tmp / "l.csv"
+        code, out, _ = self.run_cli("live", "@Chan", "--json", "--csv", str(path))
+        data = json.loads(out)
+        self.assertEqual(data["results"][0]["concurrent_view_count"], 12_345)
+        self.assertEqual(data["ids"], ["l1".ljust(11, "_")])
+        with path.open(encoding="utf-8") as f:
+            self.assertEqual(list(csv.DictReader(f))[0]["title"], "Big stream")
+        code, out, _ = self.run_cli("live", "@Chan", "--ids")
+        self.assertEqual(out.split(), ["l1".ljust(11, "_")])
+
+    def test_out_dir_keeps_one_file_per_channel_in_the_old_format_even_when_nobody_is_live(self):
+        self.backend.listings["https://www.youtube.com/@Quiet/streams"] = []
+        folder = self.tmp / "keep"
+        code, out, err = self.run_cli("live", "@Chan", "@Quiet", "--out-dir", str(folder))
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["Chan.json", "Quiet.json"])
+        chan = json.loads((folder / "Chan.json").read_text(encoding="utf-8"))
+        self.assertEqual(chan["channel_url"], self.streams)
+        self.assertEqual(chan["live_count"], 1)
+        self.assertEqual(list(chan["streams"][0]), ["title", "channel", "url", "concurrent_view_count", "view_count"])
+        self.assertEqual(json.loads((folder / "Quiet.json").read_text(encoding="utf-8")), {"channel_url": "https://www.youtube.com/@Quiet/streams", "live_count": 0, "streams": []})
+        self.assertIn(f"Wrote {folder / 'Chan.json'}", err)
+
+    def test_without_out_dir_no_file_is_written_anywhere(self):
+        import os
+        before = set(os.listdir("."))
+        self.run_cli("live", "@Chan")
+        self.assertEqual(set(os.listdir(".")), before)
+
+    def test_channel_is_required(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            cli.main(["research", "live"])
+        self.assertIn("required", err.getvalue())
+
+
 class BackendChoiceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="ytt_research_backend_"))
