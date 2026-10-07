@@ -13,6 +13,7 @@ from ytt.ops.compile import groups as grp_mod
 from ytt.ops.compile import make as make_mod
 from ytt.ops.compile import remake as remake_mod
 from ytt.ops.compile import style as style_mod
+from ytt.ops.compile import stitch as stitch_mod
 from ytt.ops.compile import style_ops
 from ytt.ops import doctor as doctor_mod
 from ytt.ops.errors import OpError
@@ -180,6 +181,36 @@ def build_parser():
     lf.add_argument("targets", metavar="TARGETS")
     lf.add_argument("--dry-run", action="store_true", help="show what would happen, change nothing")
     lf.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
+
+    sti = sub.add_parser("stitch", help="join any videos into one file (expert utility, no workspace needed)",
+                         description="Join video files, folders of videos or wildcards into one file, with transitions. "
+                                     "Works on its own: it does not use or change the workspace.")
+    sti.add_argument("inputs", nargs="*", metavar="VIDEO", help="video files, folders or wildcards")
+    sti.add_argument("-o", "--output", default="compilation.mp4", help="the file to make (default: compilation.mp4)")
+    sti.add_argument("-t", "--transition", default="fade", help="fade (default), cut, random, any name from --list-transitions, "
+                     "or @video.mp4|key=green for a video of your own")
+    sti.add_argument("-d", "--duration", type=float, default=1.0, help="transition length in seconds (default 1.0)")
+    sti.add_argument("--overlap", action="store_true", help="the old way: transitions eat into the clips instead of getting their own time")
+    sti.add_argument("--stinger-dir", metavar="DIR", help="a folder of transition videos (see: ytt style stingers)")
+    sti.add_argument("--key", default="auto", metavar="COLOR", help="background colour of transition videos to make transparent: "
+                     "auto (default), none, green, blue, black, white or RRGGBB")
+    sti.add_argument("--key-similarity", type=float, default=0.12, help="chroma-key tolerance (default 0.12)")
+    sti.add_argument("--key-blend", type=float, default=0.05, help="chroma-key edge softness (default 0.05)")
+    sti.add_argument("--despill", action="store_true", help="remove green/blue tint from keyed edges")
+    sti.add_argument("--no-stinger-audio", action="store_true", help="don't mix in the transition videos' own sound")
+    sti.add_argument("--custom", metavar="SPEC", help='transitions for single junctions, e.g. "2=circleopen:1.5, 4=cut"')
+    sti.add_argument("--order", metavar="LIST", help="new order as positions, e.g. 3,1,2 (videos left out are dropped)")
+    sti.add_argument("--sort", choices=stitch_mod.SORTS, help="sort the videos first")
+    sti.add_argument("--shuffle", action="store_true", help="mix the videos up")
+    sti.add_argument("--resolution", metavar="SIZE", help="output size, e.g. 1920x1080 or 1080p (default: the first video's)")
+    sti.add_argument("--fps", metavar="N", help="output frame rate (default: the first video's)")
+    sti.add_argument("--fit", choices=stitch_mod.FITS, default="pad", help="pad (default) or crop videos that don't match the size")
+    sti.add_argument("--no-audio", action="store_true", help="leave the sound out")
+    sti.add_argument("--crf", type=int, default=18, help="quality, lower is better (default 18)")
+    sti.add_argument("--preset", default="medium", help="encoder speed/size trade-off (default medium)")
+    sti.add_argument("--overwrite", action="store_true", help="replace the output file if it exists")
+    sti.add_argument("--dry-run", action="store_true", help="show the plan and the ffmpeg command, make nothing")
+    sti.add_argument("--list-transitions", action="store_true", help="list every transition name and stop")
 
     dr = sub.add_parser("doctor", help="check that everything ytt needs is there and works",
                         description="Check Python, ffmpeg, yt-dlp, the workspace, its database and styles, and whether "
@@ -771,6 +802,55 @@ def cmd_style(args, root):
                 "delete": _style_delete}[verb](ws, args)
 
 
+def _stitch_request(args):
+    return stitch_mod.StitchRequest(
+        inputs=args.inputs, output=args.output, transition=args.transition, duration=args.duration, overlap=args.overlap,
+        stinger_dir=args.stinger_dir or "", key=args.key, key_similarity=args.key_similarity, key_blend=args.key_blend,
+        despill=args.despill, stinger_audio=not args.no_stinger_audio, custom=args.custom, order=args.order,
+        sort=args.sort, shuffle=args.shuffle, resolution=args.resolution, fps=args.fps, fit=args.fit,
+        audio=not args.no_audio, crf=args.crf, preset=args.preset, overwrite=args.overwrite)
+
+
+def cmd_stitch(args, root):
+    if args.list_transitions:
+        found = stitch_mod.list_transitions(args.stinger_dir or "", args.key)
+        print(", ".join(found.builtin))
+        if found.videos:
+            print("\ntransition videos ('stinger' picks one at random):")
+            for name, seconds, how in found.videos:
+                print(f"  {name:<16} {seconds:.1f}s  {how}")
+        print("\nAny video of your own:  @path/to/video.mp4|key=green|cover=0.5")
+        return 0
+    if not args.inputs:
+        raise OpError("no videos given. Name the files, a folder or a wildcard:  ytt stitch a.mp4 b.mp4 -o out.mp4")
+    sp = stitch_mod.plan_stitch(_stitch_request(args))
+    print(render_plan(sp.plan, full=True))
+    if not sp.plan.ok:
+        return 1
+    if args.dry_run:
+        print("\nffmpeg command (writes to a temporary .part file, then renames it):\n  " + sp.command_text())
+        print("\n(dry run: nothing was made)")
+        return 0
+    shown = [-1]
+
+    def progress(done, total):
+        pct = min(100, int(done * 100 / total)) if total else 0
+        if sys.stdout.isatty():
+            print(f"\r  rendering: {pct}%", end="", flush=True)
+        elif pct // 25 > shown[0]:
+            shown[0] = pct // 25
+            print(f"  rendering: {pct}%", flush=True)
+
+    print()
+    try:
+        out = stitch_mod.run_stitch(sp, on_progress=progress)
+    finally:
+        if sys.stdout.isatty():
+            print()
+    print(f"\nDone: {out}")
+    return 0
+
+
 _MARK = {doctor_mod.OK: "ok", doctor_mod.WARN: "warn", doctor_mod.FAIL: "FAIL"}
 
 
@@ -814,6 +894,8 @@ def dispatch(args, root):
             return cmd_library(args, root)
         if args.command == "doctor":
             return cmd_doctor(args, root)
+        if args.command == "stitch":
+            return cmd_stitch(args, root)
         return COMMANDS[args.action](args, root)
     except (WorkspaceError, OpError, SourceError) as e:
         print(f"Error: {e}", file=sys.stderr)
