@@ -3,7 +3,7 @@ kept small; what it does against real YouTube can only be checked on a machine t
 from datetime import datetime, timezone
 
 from ytt.sources.errors import DownloadStopped, SourceError
-from ytt.sources.models import VideoInfo
+from ytt.sources.models import ChannelTab, VideoInfo
 
 
 def _yt_dlp():
@@ -40,35 +40,47 @@ class YtDlpBackend:
         return cls(config.get("cookies_from_browser", ""), config.get("cookies_file", ""))
 
     # ---- reading
-    def list_tab(self, base_url, tab):
+    def _flat(self, url, limit=None):
+        """The channel page as yt-dlp's quick 'flat' listing: one request, no per-video detail."""
         yt_dlp = _yt_dlp()
         opts = {"quiet": True, "no_warnings": True, "skip_download": True, "ignoreerrors": True,
                 "extract_flat": True, "extractor_args": {"youtubetab": {"approximate_date": [""]}}, **self.cookies}
-        url = f"{base_url}/{tab}"
+        if limit:
+            opts["playlist_items"] = f"1:{int(limit)}"
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                return ydl.extract_info(url, download=False)
         except Exception as e:
             raise SourceError(f"could not read {url} ({_first_line(e)})")
-        entries = (info or {}).get("entries") or []
-        out = []
-        for e in entries:
-            if not e or not e.get("id"):
-                continue
-            ts = e.get("timestamp") or e.get("release_timestamp")
-            exact = None
-            if e.get("upload_date"):
-                try:
-                    exact = datetime.strptime(e["upload_date"], "%Y%m%d").replace(tzinfo=timezone.utc).timestamp()
-                except ValueError:
-                    pass
-            views = e.get("view_count")
-            if views is None:
-                views = e.get("concurrent_view_count")
-            out.append(VideoInfo(id=e["id"], title=e.get("title") or "", views=views, duration=e.get("duration"),
-                                 timestamp=exact if exact is not None else ts,
-                                 approx=exact is None and ts is not None, tab=tab))
-        return out
+
+    @staticmethod
+    def _video(e, tab):
+        ts = e.get("timestamp") or e.get("release_timestamp")
+        exact = None
+        if e.get("upload_date"):
+            try:
+                exact = datetime.strptime(e["upload_date"], "%Y%m%d").replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                pass
+        views = e.get("view_count")
+        if views is None:
+            views = e.get("concurrent_view_count")
+        return VideoInfo(id=e["id"], title=e.get("title") or "", views=views, duration=e.get("duration"),
+                         timestamp=exact if exact is not None else ts, approx=exact is None and ts is not None, tab=tab)
+
+    def _videos(self, info, tab):
+        return [self._video(e, tab) for e in (info or {}).get("entries") or [] if e and e.get("id")]
+
+    def list_tab(self, base_url, tab):
+        return self._videos(self._flat(f"{base_url}/{tab}"), tab)
+
+    def channel_tab(self, base_url, tab, limit=None):
+        info = self._flat(f"{base_url}/{tab}", limit)
+        if not info:
+            return ChannelTab()
+        return ChannelTab(name=info.get("channel") or info.get("uploader") or base_url,
+                          subs=info.get("channel_follower_count"), verified=info.get("channel_is_verified"),
+                          videos=self._videos(info, tab))
 
     def probe_date(self, video_id):
         yt_dlp = _yt_dlp()

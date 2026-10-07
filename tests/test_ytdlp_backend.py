@@ -80,6 +80,36 @@ class YtDlpTests(unittest.TestCase):
         self.assertIn("404", str(cm.exception))
         self.assertNotIn("more detail", str(cm.exception))
 
+    def test_a_channel_tab_carries_the_channel_name_followers_and_verified_flag(self):
+        FakeYoutubeDL.info = {"channel": "Chan", "uploader": "other", "channel_follower_count": 1234,
+                              "channel_is_verified": True,
+                              "entries": [{"id": "aaaaaaaaaaa", "title": "A", "view_count": 5, "upload_date": "20260102"},
+                                          {"id": "bbbbbbbbbbb", "title": "B"}, None, {"title": "no id"}]}
+        tab = self.backend.channel_tab("https://www.youtube.com/@Chan", "streams")
+        self.assertEqual((tab.name, tab.subs, tab.verified), ("Chan", 1234, True))
+        self.assertEqual([(v.id, v.views, v.tab) for v in tab.videos], [("aaaaaaaaaaa", 5, "streams"), ("bbbbbbbbbbb", None, "streams")])
+        self.assertEqual(FakeYoutubeDL.instances[0].calls, [("https://www.youtube.com/@Chan/streams", False)])
+        self.assertNotIn("playlist_items", FakeYoutubeDL.instances[0].opts)
+
+    def test_a_channel_tab_limit_asks_yt_dlp_for_only_the_newest_n(self):
+        FakeYoutubeDL.info = {"entries": []}
+        self.backend.channel_tab("https://www.youtube.com/@Chan", "videos", limit=25)
+        self.assertEqual(FakeYoutubeDL.instances[0].opts["playlist_items"], "1:25")
+
+    def test_a_channel_name_falls_back_to_the_uploader_then_the_address(self):
+        FakeYoutubeDL.info = {"uploader": "Up", "entries": []}
+        self.assertEqual(self.backend.channel_tab("https://www.youtube.com/@Chan", "videos").name, "Up")
+        FakeYoutubeDL.info = {"entries": []}
+        self.assertEqual(self.backend.channel_tab("https://www.youtube.com/@Chan", "videos").name, "https://www.youtube.com/@Chan")
+
+    def test_a_tab_the_channel_does_not_have_is_an_empty_tab_and_a_failure_is_our_error(self):
+        FakeYoutubeDL.info = None
+        tab = self.backend.channel_tab("https://www.youtube.com/@Chan", "shorts")
+        self.assertEqual((tab.name, tab.subs, tab.verified, tab.videos), (None, None, None, []))
+        FakeYoutubeDL.error = RuntimeError("HTTP Error 404: Not Found")
+        with self.assertRaisesRegex(SourceError, "@Chan/shorts.*404"):
+            self.backend.channel_tab("https://www.youtube.com/@Chan", "shorts")
+
     def test_cookies_from_the_workspace_settings_reach_every_kind_of_request(self):
         backend = YtDlpBackend.from_config({"cookies_from_browser": "firefox", "cookies_file": "/x/c.txt"})
         FakeYoutubeDL.info = {"entries": []}

@@ -1,5 +1,5 @@
 """What ytt knows about a video on YouTube (not about any local file). The YouTube id is its one identity."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 
@@ -17,3 +17,13 @@ class VideoInfo:
         if self.timestamp is None:
             return None
         return datetime.fromtimestamp(self.timestamp, tz=timezone.utc).date()
+
+
+@dataclass
+class ChannelTab:
+    """One tab of a channel as research sees it: who the channel is, plus its videos (newest first, any of which
+    may lack a view count or a date)."""
+    name: str = None
+    subs: int = None
+    verified: bool = None
+    videos: list = field(default_factory=list)

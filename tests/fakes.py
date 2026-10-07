@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ytt.sources.errors import DownloadStopped, SourceError
-from ytt.sources.models import VideoInfo
+from ytt.sources.models import ChannelTab, VideoInfo
 
 try:
     from test_auto_compile import template_clip
@@ -32,6 +32,9 @@ class FakeBackend:
         self.listed = []                # (base_url, tab) of every list_tab call
         self.probes = []
         self.heights = []
+        self.channels = {}              # base_url -> {"name":, "subs":, "verified":, "tabs": {tab: [VideoInfo]}}
+        self.tab_errors = {}            # (base_url, tab) -> message: channel_tab raises SourceError
+        self.tabs_read = []             # (base_url, tab, limit) of every channel_tab call
         self.list_error = None
         self._lock = threading.Lock()
 
@@ -40,6 +43,16 @@ class FakeBackend:
         if self.list_error:
             raise SourceError(self.list_error)
         return list(self.videos.get(tab, []))
+
+    def channel_tab(self, base_url, tab, limit=None):
+        self.tabs_read.append((base_url, tab, limit))
+        if (base_url, tab) in self.tab_errors:
+            raise SourceError(self.tab_errors[(base_url, tab)])
+        ch = self.channels.get(base_url)
+        if ch is None:
+            return ChannelTab()
+        videos = list(ch["tabs"].get(tab, []))
+        return ChannelTab(ch.get("name"), ch.get("subs"), ch.get("verified"), videos[:limit] if limit else videos)
 
     def probe_date(self, video_id):
         self.probes.append(video_id)
