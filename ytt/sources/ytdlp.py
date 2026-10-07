@@ -3,7 +3,7 @@ kept small; what it does against real YouTube can only be checked on a machine t
 from datetime import datetime, timezone
 
 from ytt.sources.errors import DownloadStopped, SourceError
-from ytt.sources.models import ChannelRef, ChannelTab, VideoInfo
+from ytt.sources.models import ChannelRef, ChannelTab, LiveInfo, VideoInfo
 
 
 def _yt_dlp():
@@ -107,6 +107,27 @@ class YtDlpBackend:
             if url and name:
                 out.append(ChannelRef(key=cid or url, name=name, url=url))
         return out
+
+    def list_url(self, url, limit=None):
+        return self._videos(self._flat(url, limit), "videos")
+
+    def live_status(self, video_id):
+        yt_dlp = _yt_dlp()
+        opts = {"quiet": True, "no_warnings": True, "ignoreerrors": True, "skip_download": True,
+                "extractor_args": {"youtube": {"player_client": ["android", "ios"], "player_skip": ["js", "configs"]}},
+                "youtube_include_dash_manifest": False, "youtube_include_hls_manifest": False, **self.cookies}
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            raise SourceError(f"could not read {url} ({_first_line(e)})")
+        if not isinstance(info, dict) or info.get("live_status") != "is_live" or info.get("is_live") is not True:
+            return None
+        return LiveInfo(id=video_id, title=info.get("title") or "(untitled)",
+                        channel=info.get("channel") or info.get("uploader") or "Unknown",
+                        url=info.get("webpage_url") or url, viewers=info.get("concurrent_view_count"),
+                        views=info.get("view_count"))
 
     def video_info(self, video_id):
         yt_dlp = _yt_dlp()

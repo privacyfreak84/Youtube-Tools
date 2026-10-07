@@ -159,6 +159,36 @@ class YtDlpTests(unittest.TestCase):
         FakeYoutubeDL.info = None
         self.assertEqual(self.backend.featured_channels("https://www.youtube.com/@Chan"), [])
 
+    def test_any_listing_address_can_be_read_with_a_limit(self):
+        FakeYoutubeDL.info = {"entries": [{"id": "aaaaaaaaaaa", "title": "A"}]}
+        rows = self.backend.list_url("https://www.youtube.com/@Chan/streams", 15)
+        self.assertEqual([r.id for r in rows], ["aaaaaaaaaaa"])
+        self.assertEqual(FakeYoutubeDL.instances[0].calls, [("https://www.youtube.com/@Chan/streams", False)])
+        self.assertEqual(FakeYoutubeDL.instances[0].opts["playlist_items"], "1:15")
+        self.backend.list_url("https://www.youtube.com/playlist?list=PL1")
+        self.assertNotIn("playlist_items", FakeYoutubeDL.instances[1].opts)
+
+    def test_a_live_video_gives_its_title_channel_and_viewers_and_anything_else_is_none(self):
+        FakeYoutubeDL.info = {"live_status": "is_live", "is_live": True, "title": "Live!", "channel": "Chan", "uploader": "x",
+                              "webpage_url": "https://www.youtube.com/watch?v=aaaaaaaaaaa", "concurrent_view_count": 321,
+                              "view_count": 400}
+        live = self.backend.live_status("aaaaaaaaaaa")
+        self.assertEqual((live.id, live.title, live.channel, live.url, live.viewers, live.views),
+                         ("aaaaaaaaaaa", "Live!", "Chan", "https://www.youtube.com/watch?v=aaaaaaaaaaa", 321, 400))
+        self.assertEqual(FakeYoutubeDL.instances[0].calls, [("https://www.youtube.com/watch?v=aaaaaaaaaaa", False)])
+        for info in ({"live_status": "was_live", "is_live": False}, {"live_status": "is_upcoming"},
+                     {"live_status": "is_live", "is_live": "yes"}, None, {}):
+            FakeYoutubeDL.info = info
+            self.assertIsNone(self.backend.live_status("aaaaaaaaaaa"), info)
+        FakeYoutubeDL.info = {"live_status": "is_live", "is_live": True}
+        live = self.backend.live_status("aaaaaaaaaaa")
+        self.assertEqual((live.title, live.channel, live.url), ("(untitled)", "Unknown", "https://www.youtube.com/watch?v=aaaaaaaaaaa"))
+
+    def test_a_live_check_that_cannot_read_the_page_is_our_error(self):
+        FakeYoutubeDL.error = RuntimeError("HTTP Error 429\nmore")
+        with self.assertRaisesRegex(SourceError, "aaaaaaaaaaa.*429"):
+            self.backend.live_status("aaaaaaaaaaa")
+
     def test_a_videos_own_page_gives_exact_date_length_and_views(self):
         FakeYoutubeDL.info = {"id": "other", "title": "T", "view_count": 9, "duration": 15.5, "upload_date": "20260301"}
         v = self.backend.video_info("aaaaaaaaaaa")

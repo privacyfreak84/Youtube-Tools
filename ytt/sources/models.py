@@ -36,3 +36,14 @@ class ChannelRef:
     key: str
     name: str
     url: str
+
+
+@dataclass
+class LiveInfo:
+    """A video that is live right now."""
+    id: str
+    title: str
+    channel: str
+    url: str
+    viewers: int = None             # watching right now
+    views: int = None

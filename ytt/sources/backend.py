@@ -18,6 +18,14 @@ class Backend(Protocol):
     def featured_channels(self, base_url):
         """The channels a channel features on its own Channels tab -> [ChannelRef] (empty when it has none)."""
 
+    def list_url(self, url, limit=None):
+        """Any listing address (a channel's streams or live tab, a playlist) -> [VideoInfo], newest first, keeping only
+        the first `limit`. Raises SourceError when the page can't be read."""
+
+    def live_status(self, video_id):
+        """-> LiveInfo when the video is live right now, None when it is not (or YouTube gave nothing).
+        Raises SourceError when the video's page can't be read."""
+
     def video_info(self, video_id):
         """Everything one video's own page says: exact upload date, length, views -> VideoInfo, or None when it can't
         be read. Never raises (the caller keeps what it already had)."""
