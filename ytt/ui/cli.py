@@ -22,10 +22,12 @@ from ytt.ops.errors import OpError
 from ytt.ops.library import forget as forget_mod
 from ytt.ops.library import views
 from ytt.ops.legacy_import import import_legacy
+from ytt.ops.research.common import ResearchError
 from ytt.sources import channel as chan
 from ytt.sources import selection as sel
 from ytt.sources.errors import SourceError
 from ytt.sources.ytdlp import YtDlpBackend
+from ytt.ui import render, research_cli
 from ytt.workspace import config as cfgmod
 from ytt.workspace import paths
 from ytt.workspace import store
@@ -235,6 +237,8 @@ def build_parser():
     sti.add_argument("--dry-run", action="store_true", help="show the plan and the ffmpeg command, make nothing")
     sti.add_argument("--list-transitions", action="store_true", help="list every transition name and stop")
 
+    research_cli.add_parser(sub)
+
     dr = sub.add_parser("doctor", help="check that everything ytt needs is there and works",
                         description="Check Python, ffmpeg, yt-dlp, the workspace, its database and styles, and whether "
                                     "YouTube can be reached. Only looks; changes nothing. Exit code 1 if something is wrong.")
@@ -257,11 +261,7 @@ def is_tty():
     return sys.stdin.isatty()
 
 
-def _table(rows, headers):
-    cells = [[str(c) for c in r] for r in rows]
-    widths = [max(len(h), *(len(r[i]) for r in cells)) if cells else len(h) for i, h in enumerate(headers)]
-    line = lambda r: "  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip()
-    return "\n".join([line(headers), line(["-" * w for w in widths]), *[line(r) for r in cells]])
+_table = render.table
 
 
 def _gb(n):
@@ -952,8 +952,10 @@ def dispatch(args, root):
             return cmd_doctor(args, root)
         if args.command == "stitch":
             return cmd_stitch(args, root)
+        if args.command == "research":
+            return research_cli.cmd_research(args, root)
         return COMMANDS[args.action](args, root)
-    except (WorkspaceError, OpError, SourceError) as e:
+    except (WorkspaceError, OpError, SourceError, ResearchError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
