@@ -265,6 +265,68 @@ class TableCliTest(ResearchCliTest):
         self.assertIn("[1/1] First video", err)
 
 
+class ChannelsCliTest(ResearchCliTest):
+    def setUp(self):
+        super().setUp()
+        from ytt.sources.models import ChannelRef
+        self.ref = lambda key, name: ChannelRef(key, name, f"https://www.youtube.com/channel/{key}")
+        self.backend.searches = {"cats": [self.ref("UC1", "Cat One"), self.ref("UC2", "Cat Two")], "dogs": [self.ref("UC2", "Cat Two")]}
+        self.backend.featured = {"https://www.youtube.com/@Seed": [self.ref("UC3", "Seeded")]}
+        self.backend.channels["https://www.youtube.com/channel/UC1"] = {"name": "Cat One", "subs": 2_300_000, "verified": True, "tabs": {}}
+
+    def test_the_table_lists_name_link_and_how_each_was_found(self):
+        code, out, err = self.run_cli("channels", "--search", "cats", "--search", "dogs", "--seed", "@Seed")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        self.assertEqual(lines[0].split(), ["Name", "URL", "Found", "via"])
+        self.assertRegex(lines[2], r'^Cat One\s+https://www.youtube.com/channel/UC1\s+search:"cats"$')
+        self.assertRegex(lines[3], r'^Cat Two\s+https://www.youtube.com/channel/UC2\s+search:"cats", search:"dogs"$')
+        self.assertRegex(lines[4], r"^Seeded\s+https://www.youtube.com/channel/UC3\s+featured-by:@Seed$")
+        self.assertIn("# 3 unique channel(s) found", err)
+
+    def test_with_subs_adds_verified_and_subscribers_columns(self):
+        code, out, _ = self.run_cli("channels", "--search", "cats", "--with-subs")
+        self.assertEqual(out.splitlines()[0].split(), ["Name", "Verified", "Subscribers", "URL", "Found", "via"])
+        self.assertRegex(out.splitlines()[2], r"^Cat One\s+Yes\s+2\.3M\s+https://")
+        self.assertRegex(out.splitlines()[3], r"^Cat Two\s+N/A\s+N/A\s+https://")
+
+    def test_urls_only_is_one_link_per_line_that_outliers_reads_back_from_stdin(self):
+        code, out, _ = self.run_cli("channels", "--search", "cats", "--urls-only")
+        self.assertEqual(out.split(), ["https://www.youtube.com/channel/UC1", "https://www.youtube.com/channel/UC2"])
+        from ytt.ops.research.common import parse_channel_list
+        self.assertEqual(parse_channel_list(out), out.split())
+
+    def test_json_has_results_and_notes_but_no_ids_and_csv_has_the_old_columns(self):
+        path = self.tmp / "c.csv"
+        code, out, _ = self.run_cli("channels", "--search", "cats", "--json", "--csv", str(path))
+        data = json.loads(out)
+        self.assertEqual(list(data), ["results", "notes"])
+        self.assertEqual(data["results"][0], {"name": "Cat One", "verified": None, "subs": None,
+                                             "url": "https://www.youtube.com/channel/UC1", "source": 'search:"cats"'})
+        with path.open(encoding="utf-8") as f:
+            self.assertEqual(list(csv.DictReader(f))[1]["name"], "Cat Two")
+
+    def test_json_and_urls_only_cannot_be_asked_for_together(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            cli.main(["research", "channels", "--search", "x", "--json", "--urls-only"])
+        self.assertIn("not allowed with argument", err.getvalue())
+
+    def test_nothing_found_and_nothing_asked(self):
+        code, out, err = self.run_cli("channels", "--search", "nothing")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("No channels found.", err)
+        code, out, err = self.run_cli("channels")
+        self.assertEqual(code, 1)
+        self.assertIn("Error: give at least one --search keyword or --seed channel", err)
+
+    def test_a_failing_search_is_shown_as_a_note_on_stderr(self):
+        self.backend.searches["bad"] = "could not read ytsearch30:bad (429)"
+        code, out, err = self.run_cli("channels", "--search", "bad", "--search", "cats")
+        self.assertEqual(code, 0)
+        self.assertIn("(search failed for 'bad': could not read ytsearch30:bad (429))", err)
+
+
 class BackendChoiceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="ytt_research_backend_"))

@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+from ytt.ops.research import channels as channels_mod
 from ytt.ops.research import outliers as outliers_mod
 from ytt.ops.research import table as table_mod
 from ytt.ops.research.common import parse_channel_list, utc_now
@@ -16,6 +17,7 @@ from ytt.workspace import paths
 from ytt.workspace.errors import WorkspaceError
 
 TOOLS = {
+    "channels": "find channels by search or from another channel's Channels tab",
     "outliers": "videos that do far better than their own channel's usual",
     "table": "a channel's videos as a table: views, date, length",
 }
@@ -43,6 +45,7 @@ def _common(sp, ids=True):
     sp.add_argument("--csv", metavar="FILE", help="also save the rows to a CSV file")
     sp.add_argument("--cookies-from-browser", metavar="BROWSER", help="pass-through to yt-dlp, e.g. firefox, chrome")
     sp.add_argument("--cookies", metavar="FILE", help="pass-through to yt-dlp: a cookies.txt file")
+    return out
 
 
 def add_parser(sub):
@@ -50,6 +53,19 @@ def add_parser(sub):
                         description="Research tools. They only read from YouTube and change nothing. "
                                     "Run `ytt research TOOL --help` for a tool's options.")
     rsub = rs.add_subparsers(dest="tool", metavar="TOOL")
+
+    c = rsub.add_parser("channels", help=TOOLS["channels"],
+                        description="Find channels worth looking at: by YouTube search, and/or the channels another "
+                                    "channel features on its Channels tab. Pipe `--urls-only` into "
+                                    "`ytt research outliers --channels-file -`.")
+    c.add_argument("--search", action="append", default=[], metavar="KEYWORD", help="search YouTube for this and collect the "
+                                                                                    "channels behind the results (repeatable)")
+    c.add_argument("--count", type=int, default=30, help="results per --search (default 30)")
+    c.add_argument("--seed", action="append", default=[], metavar="CHANNEL",
+                   help="collect the channels this channel features on its Channels tab (repeatable)")
+    c.add_argument("--with-subs", action="store_true", help="also look up subscribers and the verified badge (one request per channel)")
+    group = _common(c, ids=False)
+    group.add_argument("--urls-only", action="store_true", help="only the channel links, one per line")
 
     o = rsub.add_parser("outliers", help=TOOLS["outliers"],
                         description="Find videos that sit well above their own channel's baseline (the channel's "
@@ -106,7 +122,8 @@ def _emit(args, rows, ids, notes, csv_fields, show):
             writer.writerows(rows)
         print(f"Saved {len(rows)} rows to {args.csv}", file=sys.stderr)
     if getattr(args, "json", False):
-        print(json.dumps({"results": rows, "ids": ids, "notes": notes}, indent=2, ensure_ascii=False))
+        data = {"results": rows, "notes": notes} if ids is None else {"results": rows, "ids": ids, "notes": notes}
+        print(json.dumps(data, indent=2, ensure_ascii=False))
     elif getattr(args, "ids", False):
         print("\n".join(ids))
     else:
@@ -160,6 +177,34 @@ def research_outliers(args, root):
     return 0
 
 
+CHANNEL_CSV = ["name", "verified", "subs", "url", "source"]
+
+
+def research_channels(args, root):
+    request = channels_mod.ChannelsRequest(searches=args.search, seeds=args.seed, count=args.count, with_subs=args.with_subs)
+    result = channels_mod.find_channels(request, make_backend(args, root), on_progress=_say)
+    if not result.channels:
+        for note in result.notes:
+            print(f"  ({note})", file=sys.stderr)
+        print("No channels found.", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"results": [], "notes": result.notes}, indent=2))
+        return 1
+    print(f"# {len(result.channels)} unique channel(s) found", file=sys.stderr)
+
+    def show():
+        if args.urls_only:
+            print("\n".join(c.url for c in result.channels))
+        elif args.with_subs:
+            print(table([[c.name, yes_no(c.verified), count(c.subs), c.url, c.source] for c in result.channels],
+                        ["Name", "Verified", "Subscribers", "URL", "Found via"]))
+        else:
+            print(table([[c.name, c.url, c.source] for c in result.channels], ["Name", "URL", "Found via"]))
+
+    _emit(args, [c.as_dict() for c in result.channels], None, result.notes, CHANNEL_CSV, show)
+    return 0
+
+
 def _duration(seconds):
     if seconds is None:
         return "N/A"
@@ -202,7 +247,7 @@ def research_table(args, root):
     return 0
 
 
-RUNNERS = {"outliers": research_outliers, "table": research_table}
+RUNNERS = {"channels": research_channels, "outliers": research_outliers, "table": research_table}
 
 
 def cmd_research(args, root):
