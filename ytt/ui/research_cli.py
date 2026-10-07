@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 from ytt.ops.research import outliers as outliers_mod
-from ytt.ops.research.common import parse_channel_list
+from ytt.ops.research import table as table_mod
+from ytt.ops.research.common import parse_channel_list, utc_now
 from ytt.sources.ytdlp import YtDlpBackend
 from ytt.ui.render import count, table, yes_no
 from ytt.workspace import config as cfgmod
@@ -16,6 +17,7 @@ from ytt.workspace.errors import WorkspaceError
 
 TOOLS = {
     "outliers": "videos that do far better than their own channel's usual",
+    "table": "a channel's videos as a table: views, date, length",
 }
 
 
@@ -67,6 +69,16 @@ def add_parser(sub):
     o.add_argument("--resolve-dates", action="store_true",
                    help="look up the real date of outliers that have none (mainly Shorts); only the rows that are shown")
     _common(o)
+
+    t = rsub.add_parser("table", help=TOOLS["table"],
+                        description="A channel's videos as a table: title, views, upload date, days since, length.")
+    t.add_argument("channel", metavar="CHANNEL", help="@handle, name or channel link")
+    t.add_argument("--type", choices=[*table_mod.TABS, "all"], default="videos", help="which tab (default: videos)")
+    t.add_argument("--sort", choices=table_mod.SORTS, default="latest", help="latest (default), oldest or popular")
+    t.add_argument("--limit", type=int, help="only N videos (after sorting)")
+    t.add_argument("--full", action="store_true",
+                   help="read each video's own page for the exact date and length (Shorts need this); one request per video")
+    _common(t)
     return rs
 
 
@@ -148,7 +160,49 @@ def research_outliers(args, root):
     return 0
 
 
-RUNNERS = {"outliers": research_outliers}
+def _duration(seconds):
+    if seconds is None:
+        return "N/A"
+    m, sec = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+TABLE_CSV = ["title", "type", "views", "upload_date", "days_ago", "approx", "duration", "url", "id"]
+
+
+def research_table(args, root):
+    now = utc_now()
+    request = table_mod.TableRequest(channel=args.channel, content_type=args.type, sort=args.sort, limit=args.limit, full=args.full)
+    result = table_mod.channel_table(request, make_backend(args, root), now=now, on_progress=_say)
+    if not result.rows:
+        for note in result.notes:
+            print(f"  ({note})", file=sys.stderr)
+        print("No videos found. Check the channel link or @handle.", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"results": [], "ids": [], "notes": result.notes}, indent=2))
+        return 1
+    rows = [r.as_dict(now) for r in result.rows]
+
+    def show():
+        show_type = args.type == "all"
+        headers = ["Title", "Views", "Uploaded", "Days ago", "Duration"] + (["Type"] if show_type else [])
+        body = []
+        for r in result.rows:
+            uploaded = "N/A" if r.date is None else r.date.isoformat() + ("~" if r.approx else "")
+            days = r.days_ago(now)
+            body.append([r.title[:70], count(r.views), uploaded, "N/A" if days is None else days, _duration(r.duration)]
+                        + ([r.type] if show_type else []))
+        print(table(body, headers))
+        if any(r.approx for r in result.rows):
+            print("\n~ = approximate date, worked out from the channel page's relative time (like \"3 weeks ago\"). "
+                  "Use --full for exact dates.", file=sys.stderr)
+
+    _emit(args, rows, _unique(r.id for r in result.rows), result.notes, TABLE_CSV, show)
+    return 0
+
+
+RUNNERS = {"outliers": research_outliers, "table": research_table}
 
 
 def cmd_research(args, root):

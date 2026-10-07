@@ -7,11 +7,12 @@ import shutil
 import tempfile
 import unittest
 from argparse import Namespace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
 from ytt.sources import channel as chan
+from ytt.sources.models import VideoInfo
 from ytt.ui import cli, research_cli
 from ytt.workspace.workspace import Workspace
 
@@ -186,6 +187,82 @@ class OutliersCliTest(ResearchCliTest):
         code, out, _ = self.run_cli()
         self.assertEqual(code, 0)
         self.assertIn("ytt research outliers", out)
+
+
+class TableCliTest(ResearchCliTest):
+    def setUp(self):
+        super().setUp()
+        now = datetime(2026, 10, 7, 12, tzinfo=timezone.utc)
+        patcher = mock.patch.object(research_cli, "utc_now", lambda: now)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        def v(vid, title, views, days, duration, tab="videos", approx=False):
+            ts = None if days is None else (now - timedelta(days=days)).timestamp()
+            return VideoInfo(id=vid.ljust(11, "_"), title=title, views=views, duration=duration, timestamp=ts, approx=approx, tab=tab)
+        self.v = v
+        channel(self.backend, "@Chan", "Chan", 10, False,
+                videos=[v("a1", "First video", 1234, 2, 3725), v("a2", "Second", 2_500_000, 40, 59), v("a3", "No date", None, None, None)],
+                shorts=[v("s1", "A short", 77, 3, 15, "shorts")])
+
+    def test_the_table_has_readable_views_dates_days_and_lengths(self):
+        code, out, err = self.run_cli("table", "@Chan")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        self.assertEqual(lines[0].split(), ["Title", "Views", "Uploaded", "Days", "ago", "Duration"])
+        self.assertRegex(lines[2], r"^First video\s+1\.2K\s+2026-10-05\s+2\s+1:02:05$")
+        self.assertRegex(lines[3], r"^Second\s+2\.5M\s+2026-08-28\s+40\s+0:59$")
+        self.assertRegex(lines[4], r"^No date\s+N/A\s+N/A\s+N/A\s+N/A$")
+        self.assertNotIn("Type", out)
+        self.assertNotIn("approximate", err)
+
+    def test_all_adds_a_type_column(self):
+        code, out, _ = self.run_cli("table", "@Chan", "--type", "all")
+        self.assertIn("Type", out.splitlines()[0])
+        self.assertRegex(out, r"A short\s+77\s+2026-10-04\s+3\s+0:15\s+shorts")
+
+    def test_a_rough_date_gets_a_tilde_and_an_explanation_on_stderr(self):
+        channel(self.backend, "@Rough", "Rough", None, None, videos=[self.v("r1", "Rough one", 5, 9, 20, approx=True)])
+        code, out, err = self.run_cli("table", "@Rough")
+        self.assertRegex(out, r"2026-09-28~")
+        self.assertIn("~ = approximate date", err)
+        self.assertIn("--full", err)
+
+    def test_json_gives_iso_dates_the_approx_flag_and_ids_and_csv_has_every_column(self):
+        path = self.tmp / "t.csv"
+        code, out, _ = self.run_cli("table", "@Chan", "--json", "--csv", str(path))
+        data = json.loads(out)
+        first = data["results"][0]
+        self.assertEqual((first["upload_date"], first["days_ago"], first["approx"], first["duration"], first["views"]),
+                         ("2026-10-05", 2, False, 3725, 1234))
+        self.assertEqual(data["results"][2]["upload_date"], None)
+        self.assertEqual(len(data["ids"]), 3)
+        with path.open(encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(list(rows[0]), ["title", "type", "views", "upload_date", "days_ago", "approx", "duration", "url", "id"])
+        self.assertEqual(rows[1]["views"], "2500000")
+
+    def test_ids_are_the_videos_in_table_order(self):
+        code, out, _ = self.run_cli("table", "@Chan", "--ids", "--sort", "popular")
+        self.assertEqual(out.split(), [vid.ljust(11, "_") for vid in ("a2", "a1", "a3")])         # most viewed first, no count last
+
+    def test_no_videos_is_a_message_and_exit_1_and_empty_json_when_asked(self):
+        code, out, err = self.run_cli("table", "@Nobody")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("No videos found", err)
+        code, out, _ = self.run_cli("table", "@Nobody", "--json")
+        self.assertEqual(json.loads(out)["results"], [])
+
+    def test_a_slow_sort_with_a_limit_warns_on_stderr(self):
+        code, out, err = self.run_cli("table", "@Chan", "--sort", "popular", "--limit", "1")
+        self.assertIn("(--sort popular reads the whole videos list", err)
+        self.assertEqual(len(out.splitlines()), 3)
+
+    def test_full_asks_each_video_and_shows_progress(self):
+        self.backend.infos = {"a1".ljust(11, "_"): VideoInfo(id="a1".ljust(11, "_"), duration=100, timestamp=datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())}
+        code, out, err = self.run_cli("table", "@Chan", "--limit", "1", "--full")
+        self.assertRegex(out.splitlines()[2], r"2026-10-01\s+6\s+1:40$")
+        self.assertIn("[1/1] First video", err)
 
 
 class BackendChoiceTest(unittest.TestCase):
