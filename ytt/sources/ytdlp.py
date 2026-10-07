@@ -14,6 +14,15 @@ def _yt_dlp():
     return yt_dlp
 
 
+def yt_dlp_version():
+    """The installed yt-dlp's version text (like '2025.10.22'), or None when it is not installed."""
+    try:
+        import yt_dlp
+        return str(yt_dlp.version.__version__)
+    except (ImportError, AttributeError):
+        return None
+
+
 def _first_line(e):
     return (str(e).splitlines() or [""])[0][:200]
 

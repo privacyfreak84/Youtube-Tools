@@ -22,6 +22,7 @@ RULES = {
     "ytt.ops.compile":    ["ytt.sources", "ytt.workspace", "ytt.engine", "ytt.ops.plan", "ytt.ops.errors"],
     "ytt.ops.library":    ["ytt.sources", "ytt.workspace", "ytt.engine", "ytt.ops.compile", "ytt.ops.plan", "ytt.ops.errors"],
     "ytt.ops.legacy_import": ["ytt.workspace", "ytt.ops.compile.style"],
+    "ytt.ops.doctor":     ["ytt.sources", "ytt.workspace", "ytt.ops.compile.style"],   # only looks; changes nothing
     "ytt.ops":            [],                                   # the ops package itself (plan, errors): pure data
     "ytt.ui":             ["ytt"],                              # may use anything below (checked separately)
 }
