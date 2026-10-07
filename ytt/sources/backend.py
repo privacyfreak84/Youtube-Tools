@@ -12,6 +12,10 @@ class Backend(Protocol):
         verified flag -> ChannelTab. `limit` keeps only the newest N. A tab the channel doesn't have gives an empty
         ChannelTab. Raises SourceError when the page can't be read."""
 
+    def video_info(self, video_id):
+        """Everything one video's own page says: exact upload date, length, views -> VideoInfo, or None when it can't
+        be read. Never raises (the caller keeps what it already had)."""
+
     def probe_date(self, video_id):
         """The exact upload date of one video (a date), or None if it can't be read."""
 

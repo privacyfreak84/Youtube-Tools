@@ -136,6 +136,22 @@ class YtDlpTests(unittest.TestCase):
         FakeYoutubeDL.error = RuntimeError("blocked")
         self.assertIsNone(self.backend.probe_date("aaaaaaaaaaa"))                  # never raises: the caller falls back
 
+    def test_a_videos_own_page_gives_exact_date_length_and_views(self):
+        FakeYoutubeDL.info = {"id": "other", "title": "T", "view_count": 9, "duration": 15.5, "upload_date": "20260301"}
+        v = self.backend.video_info("aaaaaaaaaaa")
+        self.assertEqual((v.id, v.title, v.views, v.duration, v.approx, v.date()), ("aaaaaaaaaaa", "T", 9, 15.5, False, date(2026, 3, 1)))
+        self.assertEqual(FakeYoutubeDL.instances[0].calls, [("https://youtu.be/aaaaaaaaaaa", False)])
+        FakeYoutubeDL.info = {"timestamp": 1_700_000_000}                       # no exact date: a rough one is marked rough
+        v = self.backend.video_info("aaaaaaaaaaa")
+        self.assertEqual((v.approx, v.timestamp), (True, 1_700_000_000))
+        self.assertIsNone(self.backend.probe_date("aaaaaaaaaaa"))                # probe_date only ever answers with exact dates
+
+    def test_a_video_that_cannot_be_read_is_none_and_never_an_error(self):
+        FakeYoutubeDL.info = None
+        self.assertIsNone(self.backend.video_info("aaaaaaaaaaa"))
+        FakeYoutubeDL.error = RuntimeError("blocked")
+        self.assertIsNone(self.backend.video_info("aaaaaaaaaaa"))
+
     def test_download_options_cap_the_height_and_write_to_the_template(self):
         FakeYoutubeDL.info = {"title": "T", "view_count": 9, "duration": 15.5, "upload_date": "20260301"}
         info = self.backend.download("aaaaaaaaaaa", "/t/%(id)s.%(ext)s", 720)

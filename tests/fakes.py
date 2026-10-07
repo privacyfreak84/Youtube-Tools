@@ -36,6 +36,8 @@ class FakeBackend:
         self.tab_errors = {}            # (base_url, tab) -> message: channel_tab raises SourceError
         self.tabs_read = []             # (base_url, tab, limit) of every channel_tab call
         self.dates = {}                 # video id -> date that probe_date answers (before looking at the listings)
+        self.infos = {}                 # video id -> VideoInfo that video_info answers
+        self.infos_read = []            # video ids of every video_info call
         self.list_error = None
         self._lock = threading.Lock()
 
@@ -54,6 +56,10 @@ class FakeBackend:
             return ChannelTab()
         videos = list(ch["tabs"].get(tab, []))
         return ChannelTab(ch.get("name"), ch.get("subs"), ch.get("verified"), videos[:limit] if limit else videos)
+
+    def video_info(self, video_id):
+        self.infos_read.append(video_id)
+        return self.infos.get(video_id)
 
     def probe_date(self, video_id):
         self.probes.append(video_id)

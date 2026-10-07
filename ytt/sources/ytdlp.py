@@ -82,7 +82,7 @@ class YtDlpBackend:
                           subs=info.get("channel_follower_count"), verified=info.get("channel_is_verified"),
                           videos=self._videos(info, tab))
 
-    def probe_date(self, video_id):
+    def video_info(self, video_id):
         yt_dlp = _yt_dlp()
         opts = {"quiet": True, "no_warnings": True, "skip_download": True, "ignoreerrors": True,
                 "socket_timeout": 20, "extract_flat": False,
@@ -91,10 +91,15 @@ class YtDlpBackend:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(f"https://youtu.be/{video_id}", download=False)
-            ud = (info or {}).get("upload_date")
-            return datetime.strptime(ud, "%Y%m%d").date() if ud else None
         except Exception:
             return None
+        if not info:
+            return None
+        return self._video({**info, "id": video_id}, "videos")
+
+    def probe_date(self, video_id):
+        info = self.video_info(video_id)
+        return info.date() if info and info.timestamp is not None and not info.approx else None
 
     # ---- downloading
     def download(self, video_id, outtmpl, max_height, stop=None):
