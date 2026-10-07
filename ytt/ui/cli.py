@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from ytt.ops.compile import groups as grp_mod
 from ytt.ops.compile import make as make_mod
 from ytt.ops.compile import remake as remake_mod
 from ytt.ops.compile import style as style_mod
+from ytt.ops.compile import stingers as stingers_mod
 from ytt.ops.compile import stitch as stitch_mod
 from ytt.ops.compile import style_ops
 from ytt.ops import doctor as doctor_mod
@@ -161,6 +163,27 @@ def build_parser():
     de.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
     for sp in (sl, sw):
         sp.add_argument("--json", action="store_true", help="machine-readable output")
+    sg = ssub.add_parser("stingers", help="make a folder of transition videos (needs Pillow: pip install pillow)",
+                         description="Make transition videos: short animations that sweep over the cut between two clips. "
+                                     "Each comes as a transparent .mov (used directly) and a .mp4 over a key colour. Point "
+                                     "a style at the folder with `ytt style set NAME stinger-dir DIR transition stinger`. "
+                                     "Works without a workspace.")
+    sg.add_argument("-o", "--outdir", default="stingers", metavar="DIR", help="the folder to make them in (default: stingers)")
+    sg.add_argument("--size", default="1080x1920", metavar="WxH", help="match your compilations (default 1080x1920, vertical)")
+    sg.add_argument("--fps", type=int, default=30)
+    sg.add_argument("--duration", type=float, default=1.0, help="seconds per transition video (default 1.0)")
+    sg.add_argument("--only", metavar="LIST", help="comma list of the ones to make (default: all; see --list)")
+    sg.add_argument("--direction", default="auto", choices=stingers_mod.engine.DIRECTIONS)
+    sg.add_argument("--text", default="CRUNCH!", help="the word on the burst; '' for none")
+    sg.add_argument("--font", metavar="FILE", help="a .ttf for the burst word (default: Impact, Arial Black or DejaVu)")
+    sg.add_argument("--colors", metavar="LIST", help="change the palette, e.g. orange=#FF6600,blue=#003399")
+    sg.add_argument("--no-mp4", action="store_true", help="only make the transparent .mov files")
+    sg.add_argument("--key-color", default="00FF00", metavar="HEX", help="background of the .mp4 versions (default 00FF00, green)")
+    sg.add_argument("--smoothing", type=int, default=2, metavar="N", help="edge smoothing; 1 is faster (default 2)")
+    sg.add_argument("--no-sheet", action="store_true", help="don't make contact_sheet.png, the preview")
+    sg.add_argument("--list", action="store_true", help="list the transition videos ytt can make and stop")
+    sg.add_argument("--dry-run", action="store_true", help="show what would be made, make nothing")
+    sg.add_argument("--yes", "-y", action="store_true", help="don't ask before replacing files")
 
     lib = sub.add_parser("library", help="what you have: clips, compilations, sources",
                          description="Look at what is in the library. With no argument: a summary.")
@@ -791,8 +814,41 @@ def _style_delete(ws, args):
     return 0
 
 
+def _style_stingers(args):
+    """Needs no workspace: it makes a folder of files that a style can point to."""
+    if args.list:
+        for name, how in stingers_mod.list_stingers():
+            print(f"  {name:<12} {how}")
+        return 0
+    request = stingers_mod.StingerRequest(
+        outdir=args.outdir, size=args.size, fps=args.fps, duration=args.duration, only=args.only,
+        direction=args.direction, text=args.text, font=args.font, colors=args.colors, mp4=not args.no_mp4,
+        key_color=args.key_color, supersample=args.smoothing, sheet=not args.no_sheet)
+    sp = stingers_mod.plan_stingers(request)
+    print(render_plan(sp.plan, full=True))
+    if not sp.plan.ok:
+        return 1
+    if args.dry_run:
+        print("\n(dry run: nothing was made)")
+        return 0
+    if sp.plan.warnings and not _confirm(args):
+        print("Cancelled; nothing was done.")
+        return 0
+    print()
+    written = stingers_mod.run_stingers(
+        sp, on_stinger=lambda name, n, total: print(f"  making {name} ({n}/{total}) ...", flush=True))
+    folder = Path(args.outdir).resolve()
+    print(f"\nDone: {_plural(len(sp.spec.names), 'transition video')} in {folder}  "
+          f"({sp.spec.size[0]}x{sp.spec.size[1]}, {sp.spec.frames} frames at {sp.spec.fps} fps)")
+    print(f"Use them in a style:  ytt style set default stinger-dir {shlex.quote(str(folder))} transition stinger")
+    print(f"Or with stitch:       ytt stitch clips/ --stinger-dir {shlex.quote(str(folder))} -t stinger")
+    return 0
+
+
 def cmd_style(args, root):
     verb = args.verb or "list"
+    if verb == "stingers":
+        return _style_stingers(args)
     if verb == "list" and not hasattr(args, "json"):
         args.json = False
     with Workspace.open(root) as ws:
