@@ -35,6 +35,7 @@ class FakeBackend:
         self.channels = {}              # base_url -> {"name":, "subs":, "verified":, "tabs": {tab: [VideoInfo]}}
         self.tab_errors = {}            # (base_url, tab) -> message: channel_tab raises SourceError
         self.tabs_read = []             # (base_url, tab, limit) of every channel_tab call
+        self.dates = {}                 # video id -> date that probe_date answers (before looking at the listings)
         self.list_error = None
         self._lock = threading.Lock()
 
@@ -56,6 +57,8 @@ class FakeBackend:
 
     def probe_date(self, video_id):
         self.probes.append(video_id)
+        if video_id in self.dates:
+            return self.dates[video_id]
         for rows in self.videos.values():
             for v in rows:
                 if v.id == video_id and v.timestamp is not None:
