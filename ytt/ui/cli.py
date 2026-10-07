@@ -14,6 +14,7 @@ from ytt.ops.compile import make as make_mod
 from ytt.ops.compile import remake as remake_mod
 from ytt.ops.compile import style as style_mod
 from ytt.ops.compile import style_ops
+from ytt.ops import doctor as doctor_mod
 from ytt.ops.errors import OpError
 from ytt.ops.library import forget as forget_mod
 from ytt.ops.library import views
@@ -179,12 +180,22 @@ def build_parser():
     lf.add_argument("targets", metavar="TARGETS")
     lf.add_argument("--dry-run", action="store_true", help="show what would happen, change nothing")
     lf.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
+
+    dr = sub.add_parser("doctor", help="check that everything ytt needs is there and works",
+                        description="Check Python, ffmpeg, yt-dlp, the workspace, its database and styles, and whether "
+                                    "YouTube can be reached. Only looks; changes nothing. Exit code 1 if something is wrong.")
+    dr.add_argument("--offline", action="store_true", help="skip the internet and YouTube checks")
     return ap
 
 
 def make_backend(ws):
     """How YouTube is reached. A function of its own so tests can hand in a fake instead."""
     return YtDlpBackend.from_config(ws.config)
+
+
+def make_probes():
+    """How the machine is looked at (programs, network, disk). A function of its own so tests can hand in a pretend one."""
+    return doctor_mod.Probes()
 
 
 # ---------------------------------------------------------------- showing things
@@ -760,6 +771,31 @@ def cmd_style(args, root):
                 "delete": _style_delete}[verb](ws, args)
 
 
+_MARK = {doctor_mod.OK: "ok", doctor_mod.WARN: "warn", doctor_mod.FAIL: "FAIL"}
+
+
+def render_doctor(root, checks):
+    width = max((len(c.name) for c in checks), default=0)
+    out = [f"ytt doctor   (workspace: {root})", ""]
+    for c in checks:
+        out.append(f"  {_MARK[c.status]:<5} {c.name:<{width}}  {c.detail}".rstrip())
+        if c.fix and c.status != doctor_mod.OK:
+            out.append(f"  {'':<5} {'':<{width}}  -> {c.fix}")
+    problems, warnings = doctor_mod.summary(checks)
+    out.append("")
+    if problems or warnings:
+        out.append(f"{_plural(problems, 'problem')}, {_plural(warnings, 'warning')}.")
+    else:
+        out.append("Everything looks fine.")
+    return "\n".join(out)
+
+
+def cmd_doctor(args, root):
+    checks = doctor_mod.run_doctor(root, make_probes(), offline=args.offline)
+    print(render_doctor(root, checks))
+    return 1 if doctor_mod.summary(checks)[0] else 0
+
+
 COMMANDS = {"init": cmd_init, "show": cmd_show, "set": cmd_set, "import": cmd_import}
 
 
@@ -776,6 +812,8 @@ def dispatch(args, root):
             return cmd_style(args, root)
         if args.command == "library":
             return cmd_library(args, root)
+        if args.command == "doctor":
+            return cmd_doctor(args, root)
         return COMMANDS[args.action](args, root)
     except (WorkspaceError, OpError, SourceError) as e:
         print(f"Error: {e}", file=sys.stderr)
