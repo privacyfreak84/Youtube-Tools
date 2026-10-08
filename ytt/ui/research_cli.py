@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 
 from ytt.ops.research import channels as channels_mod
+from ytt.ops.research import clips as clips_mod
 from ytt.ops.research import live as live_mod
+from ytt.ops.research import niche as niche_mod
 from ytt.ops.research import outliers as outliers_mod
 from ytt.ops.research import table as table_mod
 from ytt.ops.research import tags as tags_mod
@@ -20,6 +22,8 @@ from ytt.workspace.errors import WorkspaceError
 
 TOOLS = {
     "channels": "find channels by search or from another channel's Channels tab",
+    "clip": "fresh outliers from a niche: recent videos that beat their channel's usual",
+    "niche": "find a niche's channels, then outliers across all of them",
     "live": "which streams are live right now on these channels",
     "outliers": "videos that do far better than their own channel's usual",
     "table": "a channel's videos as a table: views, date, length",
@@ -52,6 +56,14 @@ def _common(sp, ids=True):
     return out
 
 
+def _discovery(sp):
+    sp.add_argument("--search", action="append", default=[], metavar="KEYWORD",
+                    help="search YouTube for this and use the channels behind the results (repeatable)")
+    sp.add_argument("--seed", action="append", default=[], metavar="CHANNEL",
+                    help="use the channels this channel features on its Channels tab (repeatable)")
+    sp.add_argument("--count", type=int, default=30, help="results per --search (default 30)")
+
+
 def add_parser(sub):
     rs = sub.add_parser("research", help="look things up on YouTube (no workspace needed): " + ", ".join(TOOLS),
                         description="Research tools. They only read from YouTube and change nothing. "
@@ -62,14 +74,36 @@ def add_parser(sub):
                         description="Find channels worth looking at: by YouTube search, and/or the channels another "
                                     "channel features on its Channels tab. Pipe `--urls-only` into "
                                     "`ytt research outliers --channels-file -`.")
-    c.add_argument("--search", action="append", default=[], metavar="KEYWORD", help="search YouTube for this and collect the "
-                                                                                    "channels behind the results (repeatable)")
-    c.add_argument("--count", type=int, default=30, help="results per --search (default 30)")
-    c.add_argument("--seed", action="append", default=[], metavar="CHANNEL",
-                   help="collect the channels this channel features on its Channels tab (repeatable)")
+    _discovery(c)
     c.add_argument("--with-subs", action="store_true", help="also look up subscribers and the verified badge (one request per channel)")
     group = _common(c, ids=False)
     group.add_argument("--urls-only", action="store_true", help="only the channel links, one per line")
+
+    n = rsub.add_parser("niche", help=TOOLS["niche"],
+                        description="Find the channels behind a search or a seed channel, then look for outliers across "
+                                    "all of them in one pass (the options after --count are the same as for `outliers`).")
+    _discovery(n)
+    n.add_argument("--type", choices=[*outliers_mod.TABS, "all"], default="videos", help="which tab to scan (default: videos)")
+    n.add_argument("--multiplier", type=float, default=3.0, help="flag videos at least this many times the channel's median (default 3.0)")
+    n.add_argument("--limit", type=int, help="only the newest N videos per channel and tab (default: all)")
+    n.add_argument("--top", type=int, help="only the best N overall")
+    n.add_argument("--sort", choices=outliers_mod.SORTS, default="ratio", help="sort key (default: ratio)")
+    n.add_argument("--reverse", action="store_true", help="flip the direction of --sort")
+    n.add_argument("--group-by", choices=outliers_mod.GROUPS, default="none", help="one table per channel or per type")
+    n.add_argument("--resolve-dates", action="store_true", help="look up the real date of outliers that have none")
+    _common(n)
+
+    k = rsub.add_parser("clip", help=TOOLS["clip"],
+                        description="Like niche, but for finding fresh material: every outlier's real date is looked up, "
+                                    "anything older than --max-age-days (or with no readable date) is dropped, and the rest "
+                                    "come best first.")
+    _discovery(k)
+    k.add_argument("--type", choices=[*outliers_mod.TABS, "all"], default="all", help="which tab to scan (default: all)")
+    k.add_argument("--multiplier", type=float, default=3.0, help="flag videos at least this many times the channel's median (default 3.0)")
+    k.add_argument("--max-age-days", type=int, default=7, help="drop outliers older than this (default 7)")
+    k.add_argument("--limit", type=int, help="only the newest N videos per channel and tab (default: all)")
+    k.add_argument("--top", type=int, default=20, help="show the best N (default 20; 0 = all)")
+    _common(k)
 
     lv = rsub.add_parser("live", help=TOOLS["live"],
                          description="Find the streams that are live right now. Live and upcoming streams are listed before "
@@ -187,6 +221,53 @@ def _show_outliers(rows, group_by):
 
 
 OUTLIER_CSV = ["channel", "verified", "subs", "title", "views", "baseline_median", "ratio", "days_ago", "type", "url", "id"]
+
+
+def _show_rows(args, rows, ids_source, notes, group_by="none"):
+    """The result of an outlier scan, shown or exported (shared by outliers, niche and clip)."""
+    _emit(args, [r.as_dict() for r in rows], _unique(r.id for r in ids_source), notes, OUTLIER_CSV,
+          lambda: _show_outliers(rows, group_by))
+
+
+def research_niche(args, root):
+    request = niche_mod.NicheRequest(
+        searches=args.search, seeds=args.seed, count=args.count, content_type=args.type, multiplier=args.multiplier,
+        limit=args.limit, top=args.top, sort=args.sort, reverse=args.reverse, resolve_dates=args.resolve_dates)
+    result = niche_mod.find_niche(request, make_backend(args, root), on_progress=_say)
+    if not result.channels:
+        return _nothing(args, result.notes, "No channels found for the given --search/--seed.")
+    if not result.rows:
+        return _nothing(args, result.notes, f"No outliers found at {args.multiplier:g}x baseline across "
+                                            f"{len(result.channels)} channel(s). Try a lower --multiplier.")
+    _show_rows(args, result.rows, result.rows, result.notes, args.group_by)
+    return 0
+
+
+def research_clip(args, root):
+    request = clips_mod.ClipsRequest(searches=args.search, seeds=args.seed, count=args.count, content_type=args.type,
+                                     multiplier=args.multiplier, max_age_days=args.max_age_days, limit=args.limit, top=args.top)
+    result = clips_mod.find_clips(request, make_backend(args, root), on_progress=_say)
+    if not result.channels:
+        return _nothing(args, result.notes, "No channels found for the given --search/--seed.")
+    if not result.candidates:
+        return _nothing(args, result.notes, f"No outliers found at {args.multiplier:g}x baseline across {len(result.channels)} channel(s).")
+    notes = list(result.notes)
+    if result.dropped:
+        notes.append(f"dropped {result.dropped} outlier(s) older than {args.max_age_days} day(s) or with an unresolvable date")
+    if not result.rows:
+        return _nothing(args, notes, f"No outliers within {args.max_age_days} day(s). Try a larger --max-age-days.")
+    _show_rows(args, result.rows, result.rows, notes)
+    return 0
+
+
+def _nothing(args, notes, message):
+    """Nothing to show: say why on stderr (and give valid empty JSON when that was asked for) and exit 1."""
+    for note in notes:
+        print(f"  ({note})", file=sys.stderr)
+    print(message, file=sys.stderr)
+    if getattr(args, "json", False):
+        print(json.dumps({"results": [], "ids": [], "notes": notes}, indent=2))
+    return 1
 
 
 def research_outliers(args, root):
@@ -340,7 +421,7 @@ def research_table(args, root):
     return 0
 
 
-RUNNERS = {"channels": research_channels, "live": research_live, "outliers": research_outliers, "table": research_table,
+RUNNERS = {"channels": research_channels, "clip": research_clip, "live": research_live, "niche": research_niche, "outliers": research_outliers, "table": research_table,
            "tags": research_tags}
 
 

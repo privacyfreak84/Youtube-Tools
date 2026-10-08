@@ -472,6 +472,92 @@ class TagsCliTest(ResearchCliTest):
         self.assertEqual(self.backend.infos_read, [])
 
 
+class DiscoveryScansCliTest(ResearchCliTest):
+    """niche and clip: two channels found by a search, each with one standout video."""
+
+    def setUp(self):
+        super().setUp()
+        from ytt.sources.models import ChannelRef
+        now = datetime.now(timezone.utc)
+
+        def v(prefix, views, days):
+            return [VideoInfo(id=f"{prefix}{i}".ljust(11, "_"), title=f"{prefix} {i}", views=n,
+                              timestamp=(now - timedelta(days=d)).timestamp(), tab="videos")
+                    for i, (n, d) in enumerate(zip(views, days))]
+        self.backend.searches = {"cats": [ChannelRef("uc1", "One", "https://www.youtube.com/channel/uc1"),
+                                          ChannelRef("uc2", "Two", "https://www.youtube.com/channel/uc2")]}
+        channel(self.backend, "channel/uc1", "One", 10, False, videos=v("a", [10, 10, 10, 90], [40, 30, 20, 2]))
+        channel(self.backend, "channel/uc2", "Two", None, None, videos=v("b", [20, 20, 20, 60], [40, 30, 20, 30]))
+
+    def test_niche_shows_the_outliers_of_every_channel_found_and_how_many_there_were(self):
+        code, out, err = self.run_cli("niche", "--search", "cats", "--type", "videos")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines()[0].split()[:3], ["Channel", "Verified", "Title"])
+        self.assertRegex(out, r"One\s+No\s+a 3\s+90")
+        self.assertRegex(out, r"Two\s+N/A\s+b 3\s+60")
+        self.assertIn("2 unique channel(s) discovered; scanning for outliers", err)
+
+    def test_niche_takes_the_outlier_options_and_the_output_formats(self):
+        code, out, _ = self.run_cli("niche", "--search", "cats", "--json", "--sort", "views", "--top", "1")
+        data = json.loads(out)
+        self.assertEqual([r["views"] for r in data["results"]], [90])
+        self.assertEqual(len(data["ids"]), 1)
+        code, out, _ = self.run_cli("niche", "--search", "cats", "--group-by", "channel")
+        self.assertIn("== One (10 subs) ==", out)
+        code, out, _ = self.run_cli("niche", "--search", "cats", "--ids")
+        self.assertEqual(len(out.split()), 2)
+
+    def test_niche_says_what_was_missing_when_nothing_comes_out(self):
+        code, out, err = self.run_cli("niche", "--search", "nothing")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("No channels found for the given --search/--seed.", err)
+        code, out, err = self.run_cli("niche", "--search", "cats", "--multiplier", "99")
+        self.assertEqual(code, 1)
+        self.assertIn("No outliers found at 99x baseline across 2 channel(s). Try a lower --multiplier.", err)
+        code, out, _ = self.run_cli("niche", "--search", "cats", "--multiplier", "99", "--json")
+        self.assertEqual(json.loads(out), {"results": [], "ids": [], "notes": []})
+
+    def test_niche_and_clip_need_a_search_or_a_seed(self):
+        for tool in ("niche", "clip"):
+            code, out, err = self.run_cli(tool)
+            self.assertEqual(code, 1)
+            self.assertIn("Error: give at least one --search keyword or --seed channel", err)
+        self.assertEqual(self.backend.searched, [])
+
+    def test_clip_keeps_only_the_fresh_ones_and_says_how_many_it_dropped(self):
+        code, out, err = self.run_cli("clip", "--search", "cats")
+        self.assertEqual(code, 0, err)
+        self.assertIn("One", out)
+        self.assertNotIn("Two", out)                                                  # its outlier is 30 days old
+        self.assertIn("(dropped 1 outlier(s) older than 7 day(s) or with an unresolvable date)", err)
+        self.assertEqual({t for _, t, _ in self.backend.tabs_read}, {"videos", "shorts", "streams"})
+
+    def test_clip_age_limit_and_top(self):
+        code, out, err = self.run_cli("clip", "--search", "cats", "--max-age-days", "60", "--ids")
+        self.assertEqual(len(out.split()), 2)
+        code, out, err = self.run_cli("clip", "--search", "cats", "--max-age-days", "60", "--top", "1", "--ids")
+        self.assertEqual(len(out.split()), 1)
+        code, out, err = self.run_cli("clip", "--search", "cats", "--max-age-days", "1")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("No outliers within 1 day(s). Try a larger --max-age-days.", err)
+        self.assertIn("dropped 2 outlier(s)", err)
+
+    def test_clip_with_nothing_flagged_or_nothing_found(self):
+        code, out, err = self.run_cli("clip", "--search", "cats", "--multiplier", "99")
+        self.assertEqual(code, 1)
+        self.assertIn("No outliers found at 99x baseline across 2 channel(s).", err)
+        code, out, err = self.run_cli("clip", "--search", "nothing", "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out)["results"], [])
+
+    def test_clip_json_has_the_same_rows_as_the_other_scans(self):
+        code, out, _ = self.run_cli("clip", "--search", "cats", "--json")
+        data = json.loads(out)
+        self.assertEqual(list(data["results"][0]), ["id", "channel", "verified", "subs", "title", "views", "baseline_median",
+                                                    "ratio", "days_ago", "type", "url"])
+        self.assertEqual(data["notes"], ["dropped 1 outlier(s) older than 7 day(s) or with an unresolvable date"])
+
+
 class BackendChoiceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="ytt_research_backend_"))
