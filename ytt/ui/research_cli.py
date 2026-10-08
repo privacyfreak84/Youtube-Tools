@@ -10,7 +10,8 @@ from ytt.ops.research import channels as channels_mod
 from ytt.ops.research import live as live_mod
 from ytt.ops.research import outliers as outliers_mod
 from ytt.ops.research import table as table_mod
-from ytt.ops.research.common import parse_channel_list, utc_now
+from ytt.ops.research import tags as tags_mod
+from ytt.ops.research.common import ResearchError, parse_channel_list, utc_now
 from ytt.sources.ytdlp import YtDlpBackend
 from ytt.ui.render import count, table, yes_no
 from ytt.workspace import config as cfgmod
@@ -22,6 +23,7 @@ TOOLS = {
     "live": "which streams are live right now on these channels",
     "outliers": "videos that do far better than their own channel's usual",
     "table": "a channel's videos as a table: views, date, length",
+    "tags": "the tags and title words that come up most across videos",
 }
 
 
@@ -97,6 +99,17 @@ def add_parser(sub):
                    help="look up the real date of outliers that have none (mainly Shorts); only the rows that are shown")
     _common(o)
 
+    tg = rsub.add_parser("tags", help=TOOLS["tags"],
+                         description="Count the tags and the title words across a set of videos. Tags are only on each "
+                                     "video's own page, so this makes one request per video. Works well after "
+                                     "`ytt research outliers --ids`.")
+    tg.add_argument("videos", nargs="*", metavar="VIDEO", help="video ids or links")
+    tg.add_argument("--videos", dest="videos_file", metavar="FILE", help="a file of video ids or links, one per line ('-' for stdin)")
+    tg.add_argument("--from-csv", metavar="FILE", help="the links in the 'url' column of a CSV saved by a research tool")
+    tg.add_argument("--top", type=int, default=25, help="show the top N tags and words (default 25)")
+    tg.add_argument("--min-word-len", type=int, default=3, help="shortest title word to count (default 3)")
+    _common(tg, ids=False)
+
     t = rsub.add_parser("table", help=TOOLS["table"],
                         description="A channel's videos as a table: title, views, upload date, days since, length.")
     t.add_argument("channel", metavar="CHANNEL", help="@handle, name or channel link")
@@ -114,15 +127,21 @@ def _say(text):
     print(f"  {text}", file=sys.stderr, flush=True)
 
 
+def _read_text(source):
+    try:
+        return sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ResearchError(f"can't read {source}: {e}")
+
+
 def _read_channels(args):
     channels = list(args.channels)
     if args.channels_file:
-        text = sys.stdin.read() if args.channels_file == "-" else Path(args.channels_file).read_text(encoding="utf-8")
-        channels += parse_channel_list(text)
+        channels += parse_channel_list(_read_text(args.channels_file))
     return channels
 
 
-def _emit(args, rows, ids, notes, csv_fields, show):
+def _emit(args, rows, ids, notes, csv_fields, show, extra=None):
     """What every tool does with its result: notes to stderr, optional CSV, then JSON, ids or the table."""
     for note in notes:
         print(f"  ({note})", file=sys.stderr)
@@ -134,6 +153,7 @@ def _emit(args, rows, ids, notes, csv_fields, show):
         print(f"Saved {len(rows)} rows to {args.csv}", file=sys.stderr)
     if getattr(args, "json", False):
         data = {"results": rows, "notes": notes} if ids is None else {"results": rows, "ids": ids, "notes": notes}
+        data.update(extra or {})
         print(json.dumps(data, indent=2, ensure_ascii=False))
     elif getattr(args, "ids", False):
         print("\n".join(ids))
@@ -249,6 +269,35 @@ def research_live(args, root):
     return 0
 
 
+def research_tags(args, root):
+    videos = list(args.videos)
+    if args.videos_file:
+        videos += [ln.strip() for ln in _read_text(args.videos_file).splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    if args.from_csv:
+        videos += tags_mod.urls_from_csv(_read_text(args.from_csv))
+    request = tags_mod.TagsRequest(videos=videos, top=args.top, min_word_len=args.min_word_len)
+    result = tags_mod.analyze_tags(request, make_backend(args, root), on_progress=_say)
+    if result.total == 0:
+        for note in result.notes:
+            print(f"  ({note})", file=sys.stderr)
+        print("Could not read any of the given videos.", file=sys.stderr)
+        return 1
+    print(f"\n{result.with_tags}/{result.total} video(s) had at least one tag ({result.with_tags / result.total:.0%} tag coverage).",
+          file=sys.stderr)
+
+    def show():
+        for counter, label, heading in ((result.tags, "tags", "Tag"), (result.words, "title words", "Title word")):
+            print(f"\n== Top {label} ==")
+            if not counter:
+                print("(none found)")
+            else:
+                print(table(counter.most_common(args.top), [heading, "Count"]))
+
+    _emit(args, result.rows(args.top), None, result.notes, ["kind", "value", "count"], show,
+          extra={"videos": result.total, "with_tags": result.with_tags})
+    return 0
+
+
 def _duration(seconds):
     if seconds is None:
         return "N/A"
@@ -291,7 +340,8 @@ def research_table(args, root):
     return 0
 
 
-RUNNERS = {"channels": research_channels, "live": research_live, "outliers": research_outliers, "table": research_table}
+RUNNERS = {"channels": research_channels, "live": research_live, "outliers": research_outliers, "table": research_table,
+           "tags": research_tags}
 
 
 def cmd_research(args, root):

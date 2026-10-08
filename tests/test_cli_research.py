@@ -139,6 +139,12 @@ class OutliersCliTest(ResearchCliTest):
         code, out, _ = self.run_cli("outliers", "@Small", "--channels-file", "-", "--ids", stdin="@Big\n")
         self.assertEqual(len(out.split()), 2)                                        # both the argument and the list
 
+    def test_a_channels_file_that_cannot_be_read_is_a_plain_error(self):
+        code, out, err = self.run_cli("outliers", "--channels-file", str(self.tmp / "missing.txt"))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("Error: can't read", err)
+        self.assertIn("missing.txt", err)
+
     def test_grouping_prints_a_table_per_channel_with_subscribers_or_per_type(self):
         code, out, _ = self.run_cli("outliers", "@Big", "@Small", "--group-by", "channel", "--sort", "channel")
         self.assertEqual(code, 0)
@@ -386,6 +392,84 @@ class LiveCliTest(ResearchCliTest):
         with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
             cli.main(["research", "live"])
         self.assertIn("required", err.getvalue())
+
+
+class TagsCliTest(ResearchCliTest):
+    def setUp(self):
+        super().setUp()
+        self.ids = [x.ljust(11, "_") for x in ("a", "b", "c")]
+        for vid, title, tags in zip(self.ids, ("Funny cats", "Funny dogs", "Quiet moment"), (["Cats", "funny"], ["funny"], [])):
+            self.backend.infos[vid] = VideoInfo(id=vid, title=title, tags=tags)
+
+    def test_it_prints_the_top_tags_and_title_words_and_the_coverage(self):
+        code, out, err = self.run_cli("tags", *self.ids)
+        self.assertEqual(code, 0, err)
+        self.assertIn("== Top tags ==", out)
+        self.assertIn("== Top title words ==", out)
+        self.assertRegex(out, r"Tag\s+Count\n-+\s+-+\nfunny\s+2\ncats\s+1")
+        self.assertRegex(out, r"Title word\s+Count\n-+\s+-+\nfunny\s+2")
+        self.assertIn("2/3 video(s) had at least one tag (67% tag coverage).", err)
+
+    def test_top_limits_both_tables(self):
+        code, out, _ = self.run_cli("tags", *self.ids, "--top", "1")
+        self.assertIn("funny", out)
+        self.assertNotIn("cats", out)                                  # second place in both tables
+        self.assertNotIn("dogs", out)
+
+    def test_videos_come_from_arguments_a_file_stdin_and_a_research_csv_without_repeats(self):
+        path = self.tmp / "ids.txt"
+        path.write_text(f"# some\n{self.ids[1]}\n\nhttps://youtu.be/{self.ids[2]}\n", encoding="utf-8")
+        csv_path = self.tmp / "r.csv"
+        csv_path.write_text(f"title,url\nA,https://youtu.be/{self.ids[0]}\nB,N/A\n", encoding="utf-8")
+        code, out, _ = self.run_cli("tags", self.ids[1], "--videos", str(path), "--from-csv", str(csv_path), "--json")
+        data = json.loads(out)
+        self.assertEqual(data["videos"], 3)
+        self.assertEqual(sorted(self.backend.infos_read), sorted(self.ids))
+        self.assertEqual(len(self.backend.infos_read), 3)
+        code, out, _ = self.run_cli("tags", "--videos", "-", "--json", stdin=f"{self.ids[0]}\n")
+        self.assertEqual(json.loads(out)["videos"], 1)
+
+    def test_json_has_rows_notes_and_the_coverage_numbers(self):
+        self.backend.infos.pop(self.ids[2])
+        code, out, _ = self.run_cli("tags", *self.ids, "--json", "--top", "1")
+        data = json.loads(out)
+        self.assertEqual(list(data), ["results", "notes", "videos", "with_tags"])
+        self.assertEqual(data["results"], [{"kind": "tag", "value": "funny", "count": 2}, {"kind": "title_word", "value": "funny", "count": 2}])
+        self.assertEqual((data["videos"], data["with_tags"]), (2, 2))
+        self.assertEqual(data["notes"], [f"could not read {self.ids[2]}; skipped"])
+
+    def test_csv_has_kind_value_count(self):
+        path = self.tmp / "t.csv"
+        self.run_cli("tags", *self.ids, "--csv", str(path), "--top", "2")
+        with path.open(encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(rows[0], {"kind": "tag", "value": "funny", "count": "2"})
+        self.assertEqual([r["kind"] for r in rows], ["tag", "tag", "title_word", "title_word"])
+
+    def test_no_tags_at_all_says_none_found(self):
+        self.backend.infos = {self.ids[2]: self.backend.infos[self.ids[2]]}
+        code, out, _ = self.run_cli("tags", self.ids[2])
+        self.assertEqual(code, 0)
+        self.assertIn("== Top tags ==\n(none found)", out)
+
+    def test_nothing_readable_is_a_message_and_exit_1(self):
+        code, out, err = self.run_cli("tags", "z".ljust(11, "_"))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("Could not read any of the given videos.", err)
+
+    def test_problems_with_the_input_are_plain_errors(self):
+        code, out, err = self.run_cli("tags")
+        self.assertEqual(code, 1)
+        self.assertIn("Error: give video ids or links", err)
+        code, out, err = self.run_cli("tags", "not a video")
+        self.assertIn("Error: video 1 is not a YouTube video id or link", err)
+        code, out, err = self.run_cli("tags", "--videos", str(self.tmp / "missing.txt"))
+        self.assertIn("Error: can't read", err)
+        bad = self.tmp / "bad.csv"
+        bad.write_text("title\nA\n", encoding="utf-8")
+        code, out, err = self.run_cli("tags", "--from-csv", str(bad))
+        self.assertIn("Error: no 'url' column found", err)
+        self.assertEqual(self.backend.infos_read, [])
 
 
 class BackendChoiceTest(unittest.TestCase):
