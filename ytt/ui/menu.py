@@ -27,6 +27,11 @@ from ytt.workspace import paths
 from ytt.workspace.errors import WorkspaceError
 from ytt.workspace.workspace import Workspace
 
+from ytt.ui.answers import channel_problem as _channel_problem
+from ytt.ui.answers import number as _number
+from ytt.ui.answers import number_or_nothing as _number_or_nothing
+from ytt.ui.answers import whole_number as _whole_number
+from ytt.ui.answers import whole_number_or_nothing as _whole_number_or_nothing
 from ytt.ui.prompts import GoBack
 
 MAIN = [
@@ -69,27 +74,6 @@ def _day(text):
     return (text or "-")[:10]
 
 
-def _whole_number(text):
-    t = text.strip()
-    return None if t.isdigit() and int(t) > 0 else "Type a whole number, 1 or more."
-
-
-def _number(text):
-    try:
-        return None if float(text) > 0 else "Type a number above 0."
-    except ValueError:
-        return "Type a number above 0."
-
-
-def _channel_problem(text):
-    t = text.strip()
-    if not t:
-        return "Type the channel's name (like @Name) or a link."
-    if any(c.isspace() for c in t):
-        return "A channel name or link has no spaces."
-    return None
-
-
 def _date_or_nothing(text):
     if not text.strip():
         return None
@@ -98,14 +82,6 @@ def _date_or_nothing(text):
     except ValueError as e:
         return str(e)
     return None
-
-
-def _whole_number_or_nothing(text):
-    return None if not text.strip() else _whole_number(text)
-
-
-def _number_or_nothing(text):
-    return None if not text.strip() else _number(text)
 
 
 def _videos_file_problem(text):
