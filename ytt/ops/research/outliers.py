@@ -78,9 +78,10 @@ def grouped(rows, by):
     return list(groups.items())
 
 
-def _check(request):
+def check(request, need_channels=True):
+    """Stop a bad request before anything is read. need_channels=False is for tools that find the channels themselves."""
     r = request
-    if not r.channels:
+    if need_channels and not r.channels:
         raise ResearchError("give at least one channel (or --channels-file)")
     if r.content_type not in (*TABS, "all"):
         raise ResearchError(f"--type must be one of {', '.join((*TABS, 'all'))}")
@@ -106,7 +107,7 @@ def _resolve_dates(rows, backend, now, on_progress):
 
 def find_outliers(request, backend, now=None, on_progress=None):
     """Scan the channels and return the outliers, sorted. on_progress(text) is told what is being read."""
-    _check(request)
+    check(request)
     r = request
     now = now or utc_now()
     tabs = TABS if r.content_type == "all" else (r.content_type,)
