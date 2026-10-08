@@ -12,6 +12,7 @@ class VideoInfo:
     timestamp: float = None         # upload time, UTC seconds since 1970
     approx: bool = False            # True when the timestamp is only a rough value from the channel page
     tab: str = "videos"
+    tags: list = None               # the video's own tags; only a video's own page has them (None = not read)
 
     def date(self):
         if self.timestamp is None:

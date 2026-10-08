@@ -199,6 +199,14 @@ class YtDlpTests(unittest.TestCase):
         self.assertEqual((v.approx, v.timestamp), (True, 1_700_000_000))
         self.assertIsNone(self.backend.probe_date("aaaaaaaaaaa"))                # probe_date only ever answers with exact dates
 
+    def test_a_videos_own_page_also_gives_its_tags(self):
+        FakeYoutubeDL.info = {"title": "T", "tags": ["Cats", "funny", 7, None]}
+        self.assertEqual(self.backend.video_info("aaaaaaaaaaa").tags, ["Cats", "funny"])
+        FakeYoutubeDL.info = {"title": "T", "tags": None}
+        self.assertEqual(self.backend.video_info("aaaaaaaaaaa").tags, [])
+        FakeYoutubeDL.info = {"entries": [{"id": "aaaaaaaaaaa"}]}                   # a channel listing never has tags
+        self.assertIsNone(self.backend.list_tab("https://www.youtube.com/@Chan", "videos")[0].tags)
+
     def test_a_video_that_cannot_be_read_is_none_and_never_an_error(self):
         FakeYoutubeDL.info = None
         self.assertIsNone(self.backend.video_info("aaaaaaaaaaa"))

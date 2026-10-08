@@ -142,7 +142,9 @@ class YtDlpBackend:
             return None
         if not info:
             return None
-        return self._video({**info, "id": video_id}, "videos")
+        video = self._video({**info, "id": video_id}, "videos")
+        video.tags = [t for t in (info.get("tags") or []) if isinstance(t, str)]
+        return video
 
     def probe_date(self, video_id):
         info = self.video_info(video_id)
