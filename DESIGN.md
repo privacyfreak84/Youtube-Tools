@@ -156,6 +156,17 @@ script) it prints help, so a script never waits for an answer.
   `rich` only for the header, so every command works without either installed; the menu says what to install if they
   are missing.
 
+**Menu additions (step 7).** Four entries join the main menu: *Research YouTube* (a second menu with the seven tools,
+each asking only what differs from the usual), *Join any videos into one file* (stitch), *Check that everything works*
+(doctor, no questions) and, under Styles, *Make transition videos* (stingers). They follow the same rule as every other
+flow: the answers become the command line the flags would have made, shown before it runs, and wrong answers are refused
+with a reason. Research ends with "Also save the results to a CSV file?". The research tools that find videos
+(outliers, niche, clip, table, live) always save their rows (to `cache/last-research.csv`, or to the file the person
+asked for), and when the command worked and found videos the menu asks "Make a compilation from these N video(s)?":
+the ids are written to `cache/research-ids.txt` and the normal make questions follow with `make --videos FILE`. That is
+the handoff of section 14. Stitch and stingers have no confirmation of their own, so their last question is "Make it /
+show what would be done and do nothing / go back".
+
 ## 7. Commands
 
 ```
@@ -178,6 +189,27 @@ namespace and no separate `config`. The stinger generator (today's `make_transit
 - `make` with no channel uses clips already in the library.
 - `fetch` is `make` without the compile step (today's `--no-compile`).
 - `research` keeps today's `yt_toolkit` tools, unchanged in what they do.
+
+**Step 7, as built.**
+
+- `ytt research channels|outliers|table|live|tags|niche|clip`. Every tool works with no workspace (cookie settings are
+  read from the workspace's `workspace.toml` when there is one; `--cookies-from-browser` and `--cookies` override), only
+  reads from YouTube, and ends the same way: a table by default, `--json` (`{"results", "ids", "notes"}`; `tags` adds the
+  coverage numbers, `channels` has no ids), `--ids` (one id per line, for `make --videos -`; not on `channels` and `tags`),
+  and `--csv FILE`, which saves the rows as well. Notes (a channel that was skipped, and why) go to stderr in brackets
+  and into the JSON. Nothing found: a plain message on stderr, exit code 1, and valid empty JSON if `--json` was asked.
+- *Changed from `yt_toolkit` on purpose:* `--csv` always means "also save the rows" (it used to be the input of `tags`;
+  that is now `--from-csv`, and `tags --videos FILE|-` reads a list of ids); `tags` takes video ids as well as links
+  and only YouTube videos; `live` prints a table and keeps the old one-JSON-file-per-channel output behind
+  `--out-dir DIR`; a title in a table is shortened to fit but never in `--json` or `--csv`; a CSV column `id` is added
+  at the end; `table` gives `upload_date` as an ISO date with a separate `approx` flag (not `2026-01-02~`) in
+  `--json`/`--csv` while the table still shows the `~`; channel links to `/channels`, `/about` or `/live` now resolve
+  to the channel everywhere.
+- `ytt stitch FILES... -o OUT`: the engine behind a request, plan, run of its own; works with no workspace. It keeps
+  every flag of `stitch_videos.py` except the two interactive ones, `--pick-transitions` and `--reorder` (`--custom` and
+  `--order` say the same without asking). It refuses to replace a file without `--overwrite` and refuses an output that
+  is one of its inputs, so it never asks for a confirmation.
+- `ytt doctor [--offline]`: see section 17. `ytt style stingers`: see section 9.
 
 ## 8. Selection
 
@@ -248,6 +280,15 @@ Blurred backgrounds, audio normalising etc. are future style fields, listed only
 cookies, delete-used-clips), a pointer `default_style = "default"`, and optional defaults for make requests
 (e.g. clips per compilation). Today's remembered setup answers are split accordingly. It is all visible with
 `ytt workspace show` and `ytt style show`, and changed only on purpose.
+
+**`style stingers`, as built (step 7).** `ytt/engine/stingers.py` is `make_transitions.py` as a library (Pillow draws,
+ffmpeg encodes; Pillow is needed only to draw, so it is not a hard dependency: `pip install pillow`), and
+`ytt/ops/compile/stingers.py` is its request, plan, run. It needs no workspace; the output folder defaults to `./stingers`.
+Files are encoded to a `.part` name and renamed, so Ctrl-C or a failed encode leaves no broken file; replacing files that
+are already there is a warning that needs a yes (`--yes`; without a terminal it refuses). `--font` that cannot be loaded is
+now an error (it used to fall back silently), `--ss` is `--smoothing`, and the command prints the `ytt style set ... stinger-dir
+... transition stinger` and `ytt stitch --stinger-dir ...` lines that use the folder. Every stinger is tested to be clear at
+both ends and to cover the whole screen at the midpoint, where the cut is hidden.
 
 ## 10. Compilations and remake
 
@@ -385,6 +426,14 @@ for research output.
 - In the guided menu, a research result ends with "Make a compilation from these? [y/N]", passing the same list in
   memory.
 
+**As built (step 7).** `ytt/ops/research/` has one module per tool (`channels`, `outliers`, `table`, `live`, `tags`,
+`niche`, `clip`) and may import only `ytt.sources` (enforced by `tests/test_architecture.py`). `niche` and `clip` are the
+discovery step of `channels` followed by the scan of `outliers`; `clip` always looks up the real date of every outlier and
+drops the old ones. Each takes a request and a backend and returns data and notes; nothing in them prints. The command
+line is `ytt/ui/research_cli.py`. The backend gained `channel_tab`, `video_info`, `search_channels`, `featured_channels`,
+`list_url` and `live_status`; a failed read is a `SourceError` that the tool turns into a note, except `video_info`,
+which never raises. Results are checked against a fake YouTube; none of this has run against real YouTube yet.
+
 ## 15. Architecture and the dependency rule
 
 ```
@@ -428,6 +477,17 @@ Enforced by a test that reads the import graph, not by good intentions:
 - `ytt doctor` checks Python, ffmpeg, ffprobe, yt-dlp (and its age), workspace permissions, database, styles,
   network and YouTube reachability, and can verify migrated state.
 
+**`doctor`, as built (step 7).** `ytt/ops/doctor.py` returns a list of checks (ok / warn / fail, what it saw, how to fix
+it); it only looks and changes nothing, and everything outside the program (programs, network, disk, the date) comes in
+through a `Probes` object so tests use a pretend machine. It checks: Python 3.11 or newer; ffmpeg and ffprobe, and that
+ffmpeg has the `libx264` and `aac` encoders (Fedora's stock `ffmpeg-free` has no `libx264`; rendering needs it); yt-dlp
+installed and under 60 days old (a warning, since an old yt-dlp is the usual reason downloads stop working); the menu
+libraries; the workspace (writable, `workspace.toml` readable, clip and compilation folders, 5 GB free, cookies file,
+watch folders); the database, opened read-only (version, integrity); styles (each loads, intro/outro files and the stinger
+folder exist, the default exists); whether every ready clip and compilation still has its file (how a migrated workspace is
+verified); and the internet and YouTube. With no workspace it says so as a warning and carries on. Exit code 1 when
+something failed, 0 when there are only warnings; `--offline` skips the network checks.
+
 ## 18. Deliberately not part of this
 
 No plugin system, workflow language, daemon, GUI, multi-user mode, non-YouTube sources, aliases, extension
@@ -466,7 +526,10 @@ removed in one commit.
    Real YouTube downloads and real-size libraries are untested.
 6. The guided menu on top of the same operations (`rich` + `questionary`). **Done** (`ytt` at a terminal; see "The
    guided menu, as built" in section 6). Not yet used on a real machine with real downloads.
-7. `research`, `stitch`, `doctor`, `style stingers`; consistent output.
+7. `research`, `stitch`, `doctor`, `style stingers`; consistent output. **Done** (`ytt research` with seven tools,
+   `ytt stitch`, `ytt doctor`, `ytt style stingers`, and the menu entries and the research-to-make handoff; see
+   sections 6, 7, 9, 14 and 17, "as built"). Consistent output means the same table style, `--json`/`--ids`/`--csv`,
+   notes on stderr, plain messages and exit codes in every research tool. Nothing has run against real YouTube.
 8. Docs; delete the old scripts; port or replace their tests.
 
 Each step ends in something that runs. The guided UI is last because it is the one layer that can be rebuilt freely
@@ -487,7 +550,14 @@ not yet replace them.
 - The menu is tested with scripted answers (exact command lines, validation, Ctrl-C, whole flows against the fake
   YouTube), with real key presses fed to the real prompts through a pipe, and by hand in a pseudo-terminal; not yet
   on the user's own terminal. `style edit` still asks its questions as plain typed lines (step 5), not with arrow keys.
-  Research, `stitch`, `doctor` and `style stingers` join the menu in step 7.
+  The research, stitch, doctor and stinger flows of step 7 are tested the same way.
+- Research, `doctor`'s network checks and everything that reads YouTube are checked against a fake YouTube only; what
+  real YouTube returns (flat-listing fields, rough dates, subscriber counts, live flags, blocks and rate limits) is
+  unverified until run on the user's machine. `doctor` and `stitch` were also tried only in the sandbox, on tiny
+  synthetic clips. Stingers were rendered at small sizes only; 1080x1920 at the default smoothing is slow (every frame is
+  drawn at twice the size).
+- The research tools that look at each video (`table --full`, `tags`, `live`, `--resolve-dates`) make one request per
+  video and are as slow as that sounds on a big list.
 - `make` was tested with compilations of 2 clips of about a second. Large libraries (the first plan probes every unused
   clip once, then `cache/probes.json` remembers) and real-length renders are untested.
 

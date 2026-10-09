@@ -18,10 +18,10 @@ from ytt.workspace.workspace import Workspace
 
 try:
     from fakes import FakeBackend
-    from test_research_outliers import channel, vids
+    from test_research_outliers import NOW, channel, vids
 except ImportError:
     from tests.fakes import FakeBackend
-    from tests.test_research_outliers import channel, vids
+    from tests.test_research_outliers import NOW, channel, vids
 
 
 class ResearchCliTest(unittest.TestCase):
@@ -48,6 +48,9 @@ class ResearchCliTest(unittest.TestCase):
 class OutliersCliTest(ResearchCliTest):
     def setUp(self):
         super().setUp()
+        patcher = mock.patch("ytt.ops.research.outliers.utc_now", lambda: NOW)       # the fixtures' dates are relative to NOW
+        patcher.start()
+        self.addCleanup(patcher.stop)
         channel(self.backend, "@Big", "Big Channel", 1_500_000, True, videos=vids("a", [1000, 1200, 900, 1100, 4400]))
         channel(self.backend, "@Small", "Small", None, None, videos=vids("b", [10, 10, 10, 95]))
 
