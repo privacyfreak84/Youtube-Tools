@@ -197,7 +197,11 @@ class Menu(ToolFlows):
         return True
 
     # ------------------------------------------------------------ make and fetch
-    def flow_make(self):
+    def flow_make(self, videos=None):
+        """`videos`: a file of video ids to make from (the handoff from research), which skips the first question."""
+        if videos is not None:
+            argv = ["make", "--videos", videos] + self._extras(make=True, fetching=True, channel=False)
+            return self._finish(argv)
         repeatable = self._read(self._repeatable)
         choices = [("A YouTube channel (new clips are downloaded first)", "channel"),
                    ("The clips already in my library", "library"),

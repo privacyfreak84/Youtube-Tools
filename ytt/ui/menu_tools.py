@@ -1,6 +1,7 @@
 """The menu flows for the tools that need no plan screen of their own: research, stitch, doctor, and making transition
 videos (stingers). Like every flow they only ask questions and build the command line the flags would have made, then
 hand it to `self.run` (see ytt/ui/menu.py)."""
+import csv
 import shlex
 from pathlib import Path
 
@@ -20,6 +21,7 @@ RESEARCH = [
     ("Tags and title words across some videos", "tags"),
     ("Back", "back"),
 ]
+VIDEO_TOOLS = ("outliers", "niche", "clip", "table", "live")      # the research tools whose results are videos
 WHICH_VIDEOS = [("Videos", "videos"), ("Shorts", "shorts"), ("Live streams", "streams"), ("All of these", "all")]
 TABLE_ORDER = [("The newest first", "latest"), ("The oldest first", "oldest"), ("The most viewed first", "popular")]
 STITCH_TRANSITIONS = [("A fade (the usual)", "fade"), ("A hard cut, nothing in between", "cut"),
@@ -92,6 +94,16 @@ def _stinger_size_problem(text):
     return None
 
 
+def _ids_in_csv(path):
+    """The video ids in the 'id' column of a CSV a research tool saved, in order, without repeats ([] if unreadable)."""
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return []
+    return list(dict.fromkeys(r["id"].strip() for r in rows if (r.get("id") or "").strip()))
+
+
 class ToolFlows:
     """Mixed into Menu. Needs self.ask, self.say, self.run, self._do and self._cmdline."""
 
@@ -114,9 +126,31 @@ class ToolFlows:
                 if self.ask.confirm("Also save the results to a CSV file?", default=False):
                     name = self.ask.text("What should the file be called?", default=f"{tool}.csv", validate=_csv_problem)
                     argv += ["--csv", name.strip()]
-                self._do(argv)
+                self._run_research(tool, argv)
             except GoBack:
                 continue
+
+    def _run_research(self, tool, argv):
+        """Run a research command. For the tools that find videos the rows are also saved to a CSV (the person's own
+        file when they asked for one, else cache/last-research.csv), and the video ids in it are what a compilation
+        can be made from: DESIGN.md section 14, the handoff."""
+        keep = None
+        if tool in VIDEO_TOOLS:
+            if "--csv" in argv:
+                keep = Path(argv[argv.index("--csv") + 1]).expanduser()
+            else:
+                keep = self.root / "cache" / "last-research.csv"
+                keep.parent.mkdir(parents=True, exist_ok=True)
+                argv = argv + ["--csv", str(keep)]
+        if self._do(argv) != 0 or keep is None:
+            return
+        ids = _ids_in_csv(keep)
+        if not ids or not self.ask.confirm(f"Make a compilation from these {len(ids)} video(s)?", default=False):
+            return
+        file = self.root / "cache" / "research-ids.txt"
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text("\n".join(ids) + "\n", encoding="utf-8")
+        self.flow_make(videos=str(file))
 
     def _scan_options(self, default_type):
         """Which videos, how far above usual counts as standing out, how many to show: the questions outliers and

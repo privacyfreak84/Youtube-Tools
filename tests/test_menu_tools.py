@@ -16,9 +16,19 @@ YES = True
 
 
 class ResearchFlows(MenuTest):
+    def setUp(self):
+        super().setUp()
+        self.keep = str(self.root / "cache" / "last-research.csv")
+
     def research(self, *answers):
+        """The command the answers build. The tools that find videos also save their rows to cache/last-research.csv
+        (see HandoffToMake); that pair is taken off here so these tests are about the questions."""
         self.menu(*answers, BACK).flow_research()
-        return self.only_call()
+        return self.only_research_call()
+
+    def only_research_call(self):
+        argv = self.only_call()
+        return argv[:-2] if argv[-2:] == ["--csv", self.keep] else argv
 
     def test_channels_from_a_search(self):
         argv = self.research("channels", "search", "cute cats", NO, NO)
@@ -89,7 +99,7 @@ class ResearchFlows(MenuTest):
     def test_wrong_answers_are_refused_with_a_reason_and_asked_again(self):
         m = self.menu("outliers", "  ", "@A", "videos", "0", "3", "x", "4", NO, BACK)
         m.flow_research()
-        self.assertEqual(self.only_call(), ["research", "outliers", "@A", "--top", "4"])
+        self.assertEqual(self.only_research_call(), ["research", "outliers", "@A", "--top", "4"])
         reasons = [why for _, _, why in self.ask.refused]
         self.assertIn("Type at least one channel", reasons[0])
         self.assertEqual(reasons[1], "Type a number above 0.")
@@ -110,7 +120,7 @@ class ResearchFlows(MenuTest):
 
     def test_cancelling_a_question_returns_to_the_research_menu_and_nothing_runs(self):
         self.menu("outliers", "@A", CANCEL, "live", "@B", NO, BACK).flow_research()
-        self.assertEqual(self.only_call(), ["research", "live", "@B"])
+        self.assertEqual(self.only_research_call(), ["research", "live", "@B"])
 
     def test_every_tool_in_the_research_menu_has_its_questions_and_is_a_real_command(self):
         import contextlib
@@ -131,6 +141,76 @@ class ResearchFlows(MenuTest):
     def test_research_is_reached_from_the_main_menu(self):
         self.menu("research", BACK, "quit").start()
         self.assertEqual(self.calls, [])
+
+
+class HandoffToMake(MenuTest):
+    """A research result that is a list of videos can become a compilation (DESIGN.md section 14)."""
+
+    def setUp(self):
+        super().setUp()
+        self.ids = ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]
+        self.keep = self.root / "cache" / "last-research.csv"
+        self.exit_code = 0
+        self.rows = [*self.ids, self.ids[0], ""]                         # a repeat and an empty id: neither counts
+
+    def run_that_saves(self, argv):
+        """Stands in for the real command: records the words and writes the CSV the real one would."""
+        self.calls.append(list(argv))
+        if "--csv" in argv and self.exit_code == 0:
+            path = Path(argv[argv.index("--csv") + 1])
+            path.write_text("id,title\n" + "".join(f"{i},T\n" for i in self.rows), encoding="utf-8")
+        return self.exit_code
+
+    def flow(self, *answers):
+        self.menu(*answers, BACK, run=self.run_that_saves).flow_research()
+        return self.calls
+
+    def test_the_tools_that_find_videos_keep_their_rows_and_offer_a_compilation(self):
+        calls = self.flow("outliers", "@A", "videos", "3", "", NO, YES, [], GO)
+        self.assertEqual(calls[0], ["research", "outliers", "@A", "--csv", str(self.keep)])
+        self.assertEqual((self.root / "cache" / "research-ids.txt").read_text(), "\n".join(self.ids) + "\n")
+        make = calls[1]
+        self.assertEqual(make, ["make", "--videos", str(self.root / "cache" / "research-ids.txt")])
+        self.assertEqual(self.request(make).fetch.videos, self.ids)
+        self.assertIn("Make a compilation from these 3 video(s)?", self.ask.everything_shown())
+        self.assertIn("Command line for this:  ytt make --videos", self.shown.getvalue())
+
+    def test_the_make_questions_that_follow_are_the_usual_ones(self):
+        calls = self.flow("live", "@A", NO, YES, ["dups"], GO)
+        self.assertEqual(calls[1][-1], "--keep-duplicates")
+        self.assertIn("Change anything else?", self.ask.everything_shown())
+
+    def test_saying_no_makes_nothing(self):
+        calls = self.flow("niche", "cats", "videos", "3", "", NO, NO)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse((self.root / "cache" / "research-ids.txt").exists())
+
+    def test_going_back_from_the_make_questions_makes_nothing_and_stays_in_research(self):
+        calls = self.flow("clip", "cats", "all", "3", "7", "20", NO, YES, [], BACK)
+        self.assertEqual([c[0] for c in calls], ["research"])
+
+    def test_a_csv_the_person_asked_for_is_the_one_used(self):
+        mine = str(self.tmp / "mine.csv")
+        calls = self.flow("table", "@Chan", "videos", "latest", "", NO, YES, mine, YES, [], GO)
+        self.assertEqual(calls[0][-2:], ["--csv", mine])
+        self.assertEqual(calls[0].count("--csv"), 1)
+        self.assertEqual(self.request(calls[1]).fetch.videos, self.ids)
+        self.assertFalse(self.keep.exists())
+
+    def test_nothing_is_offered_when_the_command_failed_or_found_no_videos(self):
+        self.exit_code = 1
+        self.assertEqual(len(self.flow("outliers", "@A", "videos", "3", "", NO)), 1)
+        self.calls.clear()
+        self.exit_code, self.rows = 0, []
+        self.assertEqual(len(self.flow("outliers", "@A", "videos", "3", "", NO)), 1)
+        self.assertNotIn("Make a compilation", self.ask.everything_shown())
+
+    def test_channels_and_tags_never_offer_it_and_never_save_a_csv_unasked(self):
+        calls = self.flow("channels", "search", "cats", NO, NO)
+        self.assertEqual(calls, [["research", "channels", "--search", "cats"]])
+        calls = self.flow("tags", "paste", self.ids[0], NO)
+        self.assertEqual(calls[-1], ["research", "tags", self.ids[0]])
+        self.assertNotIn("Make a compilation", self.ask.everything_shown())
 
 
 class StitchFlow(MenuTest):
