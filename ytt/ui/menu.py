@@ -30,8 +30,10 @@ from ytt.workspace.workspace import Workspace
 from ytt.ui.answers import channel_problem as _channel_problem
 from ytt.ui.answers import number as _number
 from ytt.ui.answers import number_or_nothing as _number_or_nothing
+from ytt.ui.answers import videos_file_problem as _videos_file_problem
 from ytt.ui.answers import whole_number as _whole_number
 from ytt.ui.answers import whole_number_or_nothing as _whole_number_or_nothing
+from ytt.ui.menu_tools import ToolFlows
 from ytt.ui.prompts import GoBack
 
 MAIN = [
@@ -41,6 +43,9 @@ MAIN = [
     ("Look at the library", "library"),
     ("Styles (how compilations look)", "style"),
     ("Workspace and settings", "workspace"),
+    ("Research YouTube (channels, outliers, tags ...)", "research"),
+    ("Join any videos into one file", "stitch"),
+    ("Check that everything works", "doctor"),
     ("Quit", "quit"),
 ]
 SORT_LABELS = {
@@ -84,19 +89,6 @@ def _date_or_nothing(text):
     return None
 
 
-def _videos_file_problem(text):
-    path = Path(text.strip()).expanduser()
-    if not path.is_file():
-        return "There is no file there."
-    try:
-        ids = chan.parse_video_ids(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError) as e:
-        return f"Can't read it: {e}"
-    except ValueError as e:
-        return str(e)
-    return None if ids else "That file lists no videos."
-
-
 def _shown_setting(value):
     if isinstance(value, bool):
         return "yes" if value else "no"
@@ -109,7 +101,7 @@ def _folder_problem(text):
     return None if Path(text.strip()).expanduser().is_dir() else "There is no folder there."
 
 
-class Menu:
+class Menu(ToolFlows):
     def __init__(self, root, run, ask, console=None, workspace_flag=None):
         """root: the workspace folder. run(words) -> exit code (cli.run_argv). ask: a Prompter. workspace_flag: the
         --workspace the person typed, if any, so the command lines shown still work."""
@@ -453,7 +445,7 @@ class Menu:
         while True:
             what = self.ask.select("Styles", [
                 ("The styles I have", "list"), ("Look at one", "show"), ("Change one, or make a new one", "edit"),
-                ("Delete one", "delete"), ("Back", "back")])
+                ("Delete one", "delete"), ("Make transition videos to use between clips", "stingers"), ("Back", "back")])
             if what == "back":
                 return
             try:
@@ -462,6 +454,8 @@ class Menu:
                 continue
 
     def _style_action(self, what):
+        if what == "stingers":
+            return self._style_stingers()
         names = self._read(lambda ws: [(n, d) for n, d, _, _ in style_ops.list_styles(ws)])
         label = lambda n, d: n + (" (the default)" if d else "")
         if what == "list":

@@ -1,6 +1,10 @@
 """The checks the guided menu applies to typed answers. Each returns None when the answer is fine, or a short
 message saying what is wrong (the question is then asked again)."""
 
+from pathlib import Path
+
+from ytt.sources import channel as chan
+
 
 def whole_number(text):
     t = text.strip()
@@ -29,3 +33,16 @@ def whole_number_or_nothing(text):
 
 def number_or_nothing(text):
     return None if not text.strip() else number(text)
+
+
+def videos_file_problem(text):
+    path = Path(text.strip()).expanduser()
+    if not path.is_file():
+        return "There is no file there."
+    try:
+        ids = chan.parse_video_ids(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as e:
+        return f"Can't read it: {e}"
+    except ValueError as e:
+        return str(e)
+    return None if ids else "That file lists no videos."
