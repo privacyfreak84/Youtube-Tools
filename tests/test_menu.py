@@ -103,6 +103,22 @@ class MakeFromAChannel(MenuTest):
         self.assertEqual((f.date_from, f.date_to, f.min_views, f.min_length, f.max_length),
                          ("2025-01-01", "", 5000, 0.5, 2))
 
+    def test_a_date_range_typed_once_is_not_carried_into_the_next_make(self):
+        # The old tool kept the previous run's dates as the answers to the next run's questions, so pressing Enter
+        # silently cut an 844-video channel down to one video (fixed in the old tool on 2026-10-02).
+        first = ["channel", "@Chan", "videos", "popular", "clips", "10", ["dates"], "2025-01-01", "2025-06-30", [], GO]
+        second = ["channel", "@Chan", "videos", "popular", "clips", "10", [], [], GO]
+        m = self.menu(*first, *second)
+        m.flow_make()
+        m.flow_make()
+        self.assertEqual(self.calls[0][-4:], ["--from", "2025-01-01", "--to", "2025-06-30"])
+        self.assertNotIn("--from", self.calls[1])
+        self.assertNotIn("--to", self.calls[1])
+        date_questions = [a for a in self.ask.asked if "date" in a[1] and a[0] == "text"]
+        self.assertEqual([a[3] for a in date_questions], ["", ""])                       # no starting answer, ever
+        limit_questions = [a for a in self.ask.asked if a[1].startswith("Narrow it down")]
+        self.assertEqual(len(limit_questions), 2)                                         # asked again, nothing pre-ticked
+
     def test_every_extra_reaches_the_request(self):
         m = self.menu("channel", "@Chan", "videos", "popular", "clips", "10", [], EVERY_EXTRA,
                       "default", "clips", "20", "newest", "each", "fetch", True, "720", GO)
