@@ -269,17 +269,21 @@ def check_library_files(root, conn):
         comps = conn.execute("SELECT name, output_path FROM compilations").fetchall()
     except sqlite3.Error:
         return []
-    gone_clips = sum(1 for r in clips if not _file(root, r["path"]).is_file())
-    gone_comps = [r["name"] for r in comps if r["output_path"] and not _file(root, r["output_path"]).is_file()]
+    gone_clips = [_file(root, r["path"]) for r in clips if not _file(root, r["path"]).is_file()]
+    gone_comps = [(r["name"], _file(root, r["output_path"])) for r in comps
+                  if r["output_path"] and not _file(root, r["output_path"]).is_file()]
     out = []
     if gone_clips:
-        out.append(Check("Clip files", WARN, f"{gone_clips} of {len(clips)} ready clips have no file",
+        out.append(Check("Clip files", WARN, f"{len(gone_clips)} of {len(clips)} ready clips have no file "
+                                             f"(the first should be at {gone_clips[0]})",
                          "ytt remake downloads them again when it needs them; ytt library clips shows which"))
     else:
         out.append(Check("Clip files", OK, f"{len(clips)} ready clips, all present"))
     if gone_comps:
-        shown = ", ".join(gone_comps[:3]) + (f" (+{len(gone_comps) - 3} more)" if len(gone_comps) > 3 else "")
-        out.append(Check("Compilation files", WARN, f"{len(gone_comps)} of {len(comps)} have no file: {shown}",
+        names = [n for n, _ in gone_comps]
+        shown = ", ".join(names[:3]) + (f" (+{len(names) - 3} more)" if len(names) > 3 else "")
+        out.append(Check("Compilation files", WARN, f"{len(gone_comps)} of {len(comps)} have no file: {shown} "
+                                                    f"(the first should be at {gone_comps[0][1]})",
                          "ytt remake makes them again; ytt library forget takes them out of the records"))
     else:
         out.append(Check("Compilation files", OK, f"{len(comps)} compilations, all present"))

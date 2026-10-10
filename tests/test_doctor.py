@@ -282,10 +282,12 @@ class StylesAndFilesTest(DoctorTest):
         ws.close()
         checks = self.run_doctor()
         c = self.get(checks, "Clip files")
-        self.assertEqual((c.status, c.detail), (WARN, "1 of 2 ready clips have no file"))
+        self.assertEqual((c.status, c.detail),
+                         (WARN, f"1 of 2 ready clips have no file (the first should be at {self.root / 'clips' / 'b.mp4'})"))
         c = self.get(checks, "Compilation files")
         self.assertEqual(c.status, WARN)
         self.assertIn("compilation_001", c.detail)
+        self.assertIn(f"the first should be at {self.root / 'compilations' / 'compilation_001.mp4'}", c.detail)
 
     def test_clips_not_marked_ready_are_not_reported_as_missing(self):
         ws = self.make_workspace()
