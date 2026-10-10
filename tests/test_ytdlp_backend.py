@@ -1,6 +1,8 @@
 """ytt.sources.ytdlp against a stand-in for the yt_dlp module. This cannot prove that real YouTube behaves (the only
 real check is running it on a machine that can reach YouTube) but it does prove that our code builds the right options,
 reads the fields it relies on, and turns every failure into our own errors."""
+import contextlib
+import io
 import sys
 import types
 import unittest
@@ -79,6 +81,29 @@ class YtDlpTests(unittest.TestCase):
         self.assertIn("https://www.youtube.com/@Nope/videos", str(cm.exception))
         self.assertIn("404", str(cm.exception))
         self.assertNotIn("more detail", str(cm.exception))
+
+    def test_yt_dlps_own_complaint_about_a_missing_tab_is_not_printed_but_every_other_error_still_is(self):
+        FakeYoutubeDL.info = None
+        self.backend.channel_tab("https://www.youtube.com/@Chan", "streams")
+        logger = FakeYoutubeDL.instances[0].opts["logger"]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            logger.error("ERROR: [youtube:tab] @Chan: This channel does not have a streams tab")
+            logger.error("\x1b[0;31mERROR:\x1b[0m [youtube:tab] @Chan: This channel does not have a shorts tab")
+            self.assertEqual(err.getvalue(), "")
+            logger.error("ERROR: [youtube:tab] @Nope: HTTP Error 404: Not Found")
+        self.assertEqual(err.getvalue(), "ERROR: [youtube:tab] @Nope: HTTP Error 404: Not Found\n")
+
+    def test_the_logger_keeps_everything_else_yt_dlp_says_quiet(self):
+        FakeYoutubeDL.info = None
+        self.backend.list_tab("https://www.youtube.com/@Chan", "videos")
+        logger = FakeYoutubeDL.instances[0].opts["logger"]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            logger.debug("[debug] x")
+            logger.info("[info] y")
+            logger.warning("WARNING: z")
+        self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
 
     def test_a_channel_tab_carries_the_channel_name_followers_and_verified_flag(self):
         FakeYoutubeDL.info = {"channel": "Chan", "uploader": "other", "channel_follower_count": 1234,

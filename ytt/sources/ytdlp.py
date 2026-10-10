@@ -1,5 +1,7 @@
 """The real YouTube access, through yt-dlp. Only this module imports yt_dlp. Covered by the fake in tests, so it is
 kept small; what it does against real YouTube can only be checked on a machine that can reach YouTube."""
+import re
+import sys
 from datetime import datetime, timezone
 
 from ytt.sources.errors import DownloadStopped, SourceError
@@ -23,6 +25,28 @@ def yt_dlp_version():
         return None
 
 
+_NO_TAB = re.compile(r"does not have a \w+ tab")
+
+
+class _TabLogger:
+    """What yt-dlp says while it reads a channel page. A channel that has no Shorts or Streams tab is an ordinary
+    answer (there is nothing to list), so yt-dlp's "This channel does not have a streams tab" error is dropped;
+    every other error is printed exactly as yt-dlp would print it, and its other messages stay quiet as before."""
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        if not _NO_TAB.search(str(msg)):
+            print(msg, file=sys.stderr)
+
+
 def _first_line(e):
     return (str(e).splitlines() or [""])[0][:200]
 
@@ -43,7 +67,7 @@ class YtDlpBackend:
     def _flat(self, url, limit=None):
         """The channel page as yt-dlp's quick 'flat' listing: one request, no per-video detail."""
         yt_dlp = _yt_dlp()
-        opts = {"quiet": True, "no_warnings": True, "skip_download": True, "ignoreerrors": True,
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True, "ignoreerrors": True, "logger": _TabLogger(),
                 "extract_flat": True, "extractor_args": {"youtubetab": {"approximate_date": [""]}}, **self.cookies}
         if limit:
             opts["playlist_items"] = f"1:{int(limit)}"
