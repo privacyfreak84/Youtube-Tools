@@ -90,7 +90,8 @@ def add_parser(sub):
     n.add_argument("--sort", choices=outliers_mod.SORTS, default="ratio", help="sort key (default: ratio)")
     n.add_argument("--reverse", action="store_true", help="flip the direction of --sort")
     n.add_argument("--group-by", choices=outliers_mod.GROUPS, default="none", help="one table per channel or per type")
-    n.add_argument("--resolve-dates", action="store_true", help="look up the real date of outliers that have none")
+    n.add_argument("--resolve-dates", action="store_true",
+                   help="look up the exact date of outliers whose date is missing or only approximate")
     _common(n)
 
     k = rsub.add_parser("clip", help=TOOLS["clip"],
@@ -130,7 +131,8 @@ def add_parser(sub):
     o.add_argument("--reverse", action="store_true", help="flip the direction of --sort")
     o.add_argument("--group-by", choices=outliers_mod.GROUPS, default="none", help="one table per channel or per type")
     o.add_argument("--resolve-dates", action="store_true",
-                   help="look up the real date of outliers that have none (mainly Shorts); only the rows that are shown")
+                   help="look up the exact date of outliers whose date is missing or only approximate (a rough date "
+                        "comes from \"1 month ago\"-style text on the channel page); only the rows that are shown")
     _common(o)
 
     tg = rsub.add_parser("tags", help=TOOLS["tags"],
@@ -199,13 +201,27 @@ def _unique(ids):
     return list(dict.fromkeys(i for i in ids if i))
 
 
+def _days_ago(row):
+    """The Days ago cell: N/A when unknown, and a ~ in front when it is only a rough value."""
+    if row.days_ago is None:
+        return "N/A"
+    return f"~{row.days_ago}" if row.approx else row.days_ago
+
+
 def _outliers_table(rows):
     return table([[r.channel[:25], yes_no(r.verified), r.title[:70], count(r.views), count(int(r.baseline_median)),
-                   f"{r.ratio:.1f}x", "N/A" if r.days_ago is None else r.days_ago, r.type] for r in rows],
+                   f"{r.ratio:.1f}x", _days_ago(r), r.type] for r in rows],
                  ["Channel", "Verified", "Title", "Views", "Channel median", "x Baseline", "Days ago", "Type"])
 
 
 def _show_outliers(rows, group_by):
+    _show_outlier_groups(rows, group_by)
+    if any(r.approx for r in rows):
+        print("\n~ = approximate, worked out from the channel page's relative time (like \"1 month ago\"). "
+              "Add --resolve-dates for exact days.", file=sys.stderr)
+
+
+def _show_outlier_groups(rows, group_by):
     if group_by == "none":
         print(_outliers_table(rows))
         return
@@ -220,7 +236,8 @@ def _show_outliers(rows, group_by):
         print(_outliers_table(group))
 
 
-OUTLIER_CSV = ["channel", "verified", "subs", "title", "views", "baseline_median", "ratio", "days_ago", "type", "url", "id"]
+OUTLIER_CSV = ["channel", "verified", "subs", "title", "views", "baseline_median", "ratio", "days_ago", "approx", "type",
+               "url", "id"]
 
 
 def _show_rows(args, rows, ids_source, notes, group_by="none"):

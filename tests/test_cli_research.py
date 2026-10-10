@@ -18,10 +18,10 @@ from ytt.workspace.workspace import Workspace
 
 try:
     from fakes import FakeBackend
-    from test_research_outliers import NOW, channel, vids
+    from test_research_outliers import NOW, channel, rough, vids
 except ImportError:
     from tests.fakes import FakeBackend
-    from tests.test_research_outliers import NOW, channel, vids
+    from tests.test_research_outliers import NOW, channel, rough, vids
 
 
 class ResearchCliTest(unittest.TestCase):
@@ -64,6 +64,37 @@ class OutliersCliTest(ResearchCliTest):
         self.assertRegex(lines[2], r"^Small\s+N/A\s+b 3\s+95\s+10\s+9\.5x\s+4\s+videos$")
         self.assertRegex(lines[3], r"^Big Channel\s+Yes\s+a 4\s+4\.4K\s+1\.1K\s+4\.0x\s+5\s+videos$")
         self.assertIn("fetching @Big [videos]", err)
+
+    def test_a_rough_date_has_a_tilde_and_one_line_that_says_what_it_means(self):
+        channel(self.backend, "@Rough", "Rough", None, None, videos=rough(vids("r", [10, 10, 10, 95], days=[40, 30, 20, 30])))
+        code, out, err = self.run_cli("outliers", "@Rough")
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out.splitlines()[2], r"^Rough\s+N/A\s+r 3\s+95\s+10\s+9\.5x\s+~30\s+videos$")
+        self.assertIn("~ = approximate", err)
+        self.assertIn("--resolve-dates", err)
+
+    def test_exact_dates_get_no_tilde_and_no_explanation(self):
+        code, out, err = self.run_cli("outliers", "@Big")
+        self.assertNotIn("~", out)
+        self.assertNotIn("approximate", err)
+
+    def test_resolving_dates_turns_a_rough_one_into_an_exact_one_and_the_line_goes_away(self):
+        listing = rough(vids("r", [10, 10, 10, 95], days=[40, 30, 20, 30]))
+        channel(self.backend, "@Rough", "Rough", None, None, videos=listing)
+        self.backend.dates = {listing[3].id: date(2026, 9, 24)}
+        code, out, err = self.run_cli("outliers", "@Rough", "--resolve-dates")
+        self.assertRegex(out.splitlines()[2], r"\s9\.5x\s+13\s+videos$")
+        self.assertNotIn("approximate", err)
+
+    def test_json_and_csv_say_which_dates_are_rough(self):
+        channel(self.backend, "@Rough", "Rough", None, None, videos=rough(vids("r", [10, 10, 10, 95], days=[40, 30, 20, 30])))
+        code, out, _ = self.run_cli("outliers", "@Rough", "--json")
+        self.assertEqual([r["approx"] for r in json.loads(out)["results"]], [True])
+        path = self.tmp / "rough.csv"
+        self.run_cli("outliers", "@Rough", "--csv", str(path))
+        with open(path, newline="", encoding="utf-8") as f:
+            row = next(csv.DictReader(f))
+        self.assertEqual((row["days_ago"], row["approx"]), ("30", "True"))
 
     def test_json_has_the_rows_the_ids_and_the_notes_and_nothing_else_on_stdout(self):
         channel(self.backend, "@Tiny", "Tiny", None, None, videos=vids("t", [1, 2]))
@@ -114,7 +145,7 @@ class OutliersCliTest(ResearchCliTest):
         with path.open(encoding="utf-8") as f:
             rows = list(csv.DictReader(f))
         self.assertEqual(list(rows[0]), ["channel", "verified", "subs", "title", "views", "baseline_median", "ratio",
-                                         "days_ago", "type", "url", "id"])
+                                         "days_ago", "approx", "type", "url", "id"])
         self.assertEqual((rows[0]["channel"], rows[0]["views"], rows[0]["subs"]), ("Big Channel", "4400", "1500000"))
 
     def test_json_and_ids_cannot_be_asked_for_together(self):
@@ -557,7 +588,7 @@ class DiscoveryScansCliTest(ResearchCliTest):
         code, out, _ = self.run_cli("clip", "--search", "cats", "--json")
         data = json.loads(out)
         self.assertEqual(list(data["results"][0]), ["id", "channel", "verified", "subs", "title", "views", "baseline_median",
-                                                    "ratio", "days_ago", "type", "url"])
+                                                    "ratio", "days_ago", "approx", "type", "url"])
         self.assertEqual(data["notes"], ["dropped 1 outlier(s) older than 7 day(s) or with an unresolvable date"])
 
 

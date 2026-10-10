@@ -1,5 +1,6 @@
 """research outliers: the logic, against a fake YouTube. Nothing here can reach the network."""
 import unittest
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 from ytt.ops.research import outliers as ol
@@ -22,6 +23,11 @@ def vids(prefix, views, tab="videos", days=None):
         ts = None if d is None else (NOW - timedelta(days=d)).timestamp()
         out.append(VideoInfo(id=f"{prefix}{i:03d}".ljust(11, "_")[:11], title=f"{prefix} {i}", views=v, timestamp=ts, tab=tab))
     return out
+
+
+def rough(videos):
+    """The same videos, but their dates are only the channel page's rough ones ("1 week ago")."""
+    return [replace(v, approx=True) for v in videos]
 
 
 def channel(backend, handle, name, subs, verified, **tabs):
@@ -190,6 +196,44 @@ class ResolvingDatesTests(unittest.TestCase):
         self.assertEqual([m.split(" resolving")[0] for m in seen if "resolving" in m], ["[1/2]", "[2/2]"])
 
 
+class RoughDateTests(unittest.TestCase):
+    """A channel page only says "1 week ago"; such a date is rough and must never pass for an exact one."""
+
+    def setUp(self):
+        self.b = FakeBackend()
+        self.listing = rough(vids("r", [10, 10, 10, 90, 80], days=[40, 30, 20, 7, 7]))
+        channel(self.b, "@R", "R", None, None, videos=self.listing)
+        self.big, self.small = self.listing[3].id, self.listing[4].id
+
+    def test_a_rough_date_is_marked_as_rough_and_an_exact_one_is_not(self):
+        self.assertEqual([(r.days_ago, r.approx) for r in run(self.b, ["@R"]).rows], [(7, True), (7, True)])
+        channel(self.b, "@E", "E", None, None, videos=vids("e", [10, 10, 10, 90], days=[40, 30, 20, 7]))
+        self.assertEqual([(r.days_ago, r.approx) for r in run(self.b, ["@E"]).rows], [(7, False)])
+
+    def test_the_marker_is_in_the_json_form_too(self):
+        self.assertEqual([r.as_dict()["approx"] for r in run(self.b, ["@R"]).rows], [True, True])
+
+    def test_resolve_dates_replaces_a_rough_date_by_the_exact_one(self):
+        self.b.dates = {self.big: date(2026, 9, 24), self.small: date(2026, 10, 3)}
+        rows = run(self.b, ["@R"], resolve_dates=True).rows
+        self.assertEqual([(r.id, r.days_ago, r.approx) for r in rows], [(self.big, 13, False), (self.small, 4, False)])
+
+    def test_a_rough_date_that_cannot_be_looked_up_stays_as_it_was_and_stays_marked(self):
+        self.b.dates = {self.big: date(2026, 9, 24)}
+        rows = {r.id: r for r in run(self.b, ["@R"], resolve_dates=True).rows}
+        self.assertEqual((rows[self.big].days_ago, rows[self.big].approx), (13, False))
+        self.assertEqual((rows[self.small].days_ago, rows[self.small].approx), (7, True))
+
+    def test_rough_dates_are_not_looked_up_unless_asked(self):
+        run(self.b, ["@R"])
+        self.assertEqual(self.b.probes, [])
+
+    def test_sorting_by_age_looks_up_every_rough_date_first_so_the_order_is_true(self):
+        self.b.dates = {self.big: date(2026, 9, 24), self.small: date(2026, 10, 3)}          # 13 and 4 days, though both say 7
+        rows = run(self.b, ["@R"], resolve_dates=True, sort="days_ago").rows
+        self.assertEqual([r.days_ago for r in rows], [4, 13])
+
+
 class RequestTests(unittest.TestCase):
     def test_bad_requests_say_what_is_wrong_before_anything_is_read(self):
         b = FakeBackend()
@@ -206,7 +250,7 @@ class RequestTests(unittest.TestCase):
     def test_as_dict_has_every_column_the_csv_and_json_use(self):
         o = ol.Outlier("abcdefghijk", "C", 5, True, "T", 9, 3.0, 3.0, 4, "videos")
         self.assertEqual(list(o.as_dict()), ["id", "channel", "verified", "subs", "title", "views", "baseline_median",
-                                             "ratio", "days_ago", "type", "url"])
+                                             "ratio", "days_ago", "approx", "type", "url"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,10 @@
 """clip: the same discovery and outlier scan as niche, tuned for finding fresh clips to use: every outlier gets its
-real date looked up, anything older than `max_age_days` (or with no readable date) is dropped, and the rest come
-best first (the old ClipFinder). Freshness is the point of a repost or remix workflow."""
+exact date looked up (the channel page only says things like "1 week ago"), anything older than `max_age_days`, or
+whose exact date could not be read, is dropped, and the rest come best first (the old ClipFinder). Freshness is the
+point of a repost or remix workflow, so a rough date is not good enough to keep a video.
+
+The old ClipFinder only looked up dates that were missing, so a video from 13 days ago, shown by the channel page as
+"1 week ago", passed a 7-day limit. That is fixed here."""
 from dataclasses import dataclass, field
 
 from ytt.ops.research import channels as channels_mod
@@ -26,7 +30,7 @@ class ClipsResult:
     channels: list = field(default_factory=list)
     rows: list = field(default_factory=list)    # fresh outliers, best ratio first
     candidates: int = 0                         # outliers before the freshness filter
-    dropped: int = 0                            # too old, or no readable date
+    dropped: int = 0                            # too old, or no exact date could be read
     notes: list = field(default_factory=list)
 
 
@@ -51,7 +55,7 @@ def find_clips(request, backend, now=None, on_progress=None):
     found = outliers_mod.find_outliers(outlier_request, backend, now or utc_now(), on_progress)
     result.notes += found.notes
     result.candidates = len(found.rows)
-    result.rows = [o for o in found.rows if o.days_ago is not None and o.days_ago <= r.max_age_days]
+    result.rows = [o for o in found.rows if o.days_ago is not None and not o.approx and o.days_ago <= r.max_age_days]
     result.dropped = result.candidates - len(result.rows)
     if r.top:
         result.rows = result.rows[:r.top]

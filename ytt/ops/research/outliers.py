@@ -39,6 +39,7 @@ class Outlier:
     ratio: float
     days_ago: int
     type: str
+    approx: bool = False            # True when days_ago is only a rough value from the channel page ("1 month ago")
 
     @property
     def url(self):
@@ -47,7 +48,8 @@ class Outlier:
     def as_dict(self):
         return {"id": self.id, "channel": self.channel, "verified": self.verified, "subs": self.subs,
                 "title": self.title, "views": self.views, "baseline_median": self.baseline_median,
-                "ratio": self.ratio, "days_ago": self.days_ago, "type": self.type, "url": self.url}
+                "ratio": self.ratio, "days_ago": self.days_ago, "approx": self.approx, "type": self.type,
+                "url": self.url}
 
 
 @dataclass
@@ -96,13 +98,16 @@ def check(request, need_channels=True):
 
 
 def _resolve_dates(rows, backend, now, on_progress):
-    missing = [r for r in rows if r.days_ago is None]
-    for i, r in enumerate(missing, 1):
+    """Look up the exact date of every row that has none or only a rough one (the channel page says "1 week ago",
+    which is 7 days here but can be 13 in fact). A date that cannot be read leaves the row as it was."""
+    pending = [r for r in rows if r.days_ago is None or r.approx]
+    for i, r in enumerate(pending, 1):
         if on_progress:
-            on_progress(f"[{i}/{len(missing)}] resolving date: {r.title[:50]}")
+            on_progress(f"[{i}/{len(pending)}] resolving date: {r.title[:50]}")
         d = backend.probe_date(r.id)
         if d is not None:
             r.days_ago = (now.date() - d).days
+            r.approx = False
 
 
 def find_outliers(request, backend, now=None, on_progress=None):
@@ -138,7 +143,7 @@ def find_outliers(request, backend, now=None, on_progress=None):
                     result.rows.append(Outlier(
                         id=v.id, channel=page.name or channel, subs=page.subs, verified=page.verified,
                         title=v.title or "N/A", views=v.views, baseline_median=baseline, ratio=ratio,
-                        days_ago=days_between(v.timestamp, now), type=tab))
+                        days_ago=days_between(v.timestamp, now), type=tab, approx=bool(v.approx)))
         if not found_any:
             result.notes.append(f"no videos found for {channel}")
 

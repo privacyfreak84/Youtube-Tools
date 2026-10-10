@@ -1,5 +1,6 @@
 """research niche and clip: discovery plus the outlier scan, against a fake YouTube."""
 import unittest
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 from ytt.ops.research import clips as cl
@@ -125,6 +126,17 @@ class ClipTests(World):
     def test_a_date_already_known_from_the_channel_page_is_not_looked_up_again(self):
         self.run_clips()
         self.assertEqual(self.b.probes, [])
+
+    def test_a_rough_date_does_not_count_as_fresh_until_the_exact_date_confirms_it(self):
+        # the channel page says "1 week ago" (7 days) for all three; in fact they are 13 days, 4 days and unknown
+        listing = [replace(v, approx=True) for v in vids("s", [10] * 6 + [90, 80, 70], "shorts",
+                                                         days=[40, 35, 30, 25, 20, 15, 7, 7, 7])]
+        self.add("uc1", "One", shorts=listing)
+        self.b.dates = {listing[6].id: date(2026, 9, 24), listing[7].id: date(2026, 10, 3)}
+        res = self.run_clips(content_type="shorts")
+        self.assertEqual([(r.views, r.days_ago, r.approx) for r in res.rows], [(80, 4, False)])
+        self.assertEqual(len(self.b.probes), 3)                                           # every candidate was asked about
+        self.assertEqual((res.candidates, res.dropped), (3, 2))                           # too old, and not confirmable
 
     def test_top_caps_the_list_and_zero_or_none_means_no_cap(self):
         self.assertEqual(len(self.run_clips(top=1).rows), 1)
