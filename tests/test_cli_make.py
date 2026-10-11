@@ -54,6 +54,21 @@ class MakeCommand(MakeCliTest):
         self.assertIn("Completed: 2 compilations made, 4 clips downloaded (run 1)", out)
         self.assertEqual(self.comps(), {"compilation_001": [vid(39), vid(38)], "compilation_002": [vid(37), vid(36)]})
 
+    def test_after_making_something_it_says_how_to_make_another_batch_or_change_the_look(self):
+        code, out, err = self.make("-n", "1", "--yes")
+        self.assertEqual(code, 0, err)
+        self.assertIn("ytt make --like last", out)
+        self.assertIn("ytt remake last --style NAME", out)
+        # and those two commands are real ones: the first makes the next batch, the second remakes it
+        code, out, err = self.run_cli("make", "--like", "last", "--yes")
+        self.assertEqual(code, 0, err)
+        code, out, err = self.run_cli("remake", "last", "--style", "default", "--yes")
+        self.assertEqual(code, 0, err)
+
+    def test_when_nothing_was_made_it_does_not_suggest_another_batch(self):
+        code, out, err = self.run_cli("make", "--all", "--yes")                       # an empty library: nothing to make
+        self.assertNotIn("--like last", out)
+
     def test_without_a_terminal_it_refuses_instead_of_hanging(self):
         code, out, err = self.make("-n", "1")
         self.assertEqual(code, 1)

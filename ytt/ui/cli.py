@@ -698,6 +698,8 @@ def cmd_make(args, root):
         print(f"\n{result.status.capitalize()}: {', '.join(bits)} (run {result.run_id}).")
         if result.made:
             print(f"  Compilations are in {ws.compilations_dir}")
+            print("  Another batch like this:       ytt make --like last")
+            print("  Same clips, another look:      ytt remake last --style NAME")
         if c["left_over"]:
             print(f"  {_plural(c['left_over'], 'clip')} left over, kept for the next make.")
         if result.status == "partial":
