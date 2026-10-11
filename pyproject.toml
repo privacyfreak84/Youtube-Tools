@@ -7,7 +7,10 @@ name = "ytt"
 version = "0.1.0"
 description = "Research YouTube and make compilations."
 requires-python = ">=3.11"
-dependencies = ["questionary>=2.0", "rich>=13"]
+dependencies = ["yt-dlp", "questionary>=2.0", "rich>=13"]
+
+[project.optional-dependencies]
+stingers = ["pillow"]           # only for `ytt style stingers`, which draws the transition videos
 
 [project.scripts]
 ytt = "ytt.ui.cli:main"

@@ -137,7 +137,7 @@ def check_ytdlp(probes):
     if age > YTDLP_OLD_DAYS:
         return [Check("yt-dlp", WARN, f"{version} ({age} days old)",
                       "YouTube changes often and an old yt-dlp is the usual reason downloads stop working: "
-                      "pip install -U yt-dlp")]
+                      "pip install -U yt-dlp   (installed with pipx: pipx runpip ytt install -U yt-dlp)")]
     return [Check("yt-dlp", OK, f"{version} ({max(age, 0)} days old)")]
 
 
