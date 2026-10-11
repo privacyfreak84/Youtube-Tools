@@ -1,7 +1,7 @@
 """The real YouTube access, through yt-dlp. Only this module imports yt_dlp. Covered by the fake in tests, so it is
 kept small; what it does against real YouTube can only be checked on a machine that can reach YouTube."""
+import logging
 import re
-import sys
 from datetime import datetime, timezone
 
 from ytt.sources.errors import DownloadStopped, SourceError
@@ -26,12 +26,15 @@ def yt_dlp_version():
 
 
 _NO_TAB = re.compile(r"does not have a \w+ tab")
+log = logging.getLogger(__name__)
 
 
 class _TabLogger:
     """What yt-dlp says while it reads a channel page. A channel that has no Shorts or Streams tab is an ordinary
     answer (there is nothing to list), so yt-dlp's "This channel does not have a streams tab" error is dropped;
-    every other error is printed exactly as yt-dlp would print it, and its other messages stay quiet as before."""
+    every other error is passed on to the `logging` module (this layer does not talk to the user itself; with no
+    logging set up, Python writes it to stderr, so it reads exactly as yt-dlp's own line did), and yt-dlp's other
+    messages stay quiet as before."""
 
     def debug(self, msg):
         pass
@@ -44,7 +47,7 @@ class _TabLogger:
 
     def error(self, msg):
         if not _NO_TAB.search(str(msg)):
-            print(msg, file=sys.stderr)
+            log.error("%s", msg)
 
 
 def _first_line(e):

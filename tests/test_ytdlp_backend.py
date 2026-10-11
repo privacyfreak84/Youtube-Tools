@@ -82,15 +82,23 @@ class YtDlpTests(unittest.TestCase):
         self.assertIn("404", str(cm.exception))
         self.assertNotIn("more detail", str(cm.exception))
 
-    def test_yt_dlps_own_complaint_about_a_missing_tab_is_not_printed_but_every_other_error_still_is(self):
+    def test_yt_dlps_own_complaint_about_a_missing_tab_is_not_reported_but_every_other_error_still_is(self):
+        FakeYoutubeDL.info = None
+        self.backend.channel_tab("https://www.youtube.com/@Chan", "streams")
+        logger = FakeYoutubeDL.instances[0].opts["logger"]
+        with self.assertNoLogs("ytt.sources.ytdlp", "DEBUG"):
+            logger.error("ERROR: [youtube:tab] @Chan: This channel does not have a streams tab")
+            logger.error("\x1b[0;31mERROR:\x1b[0m [youtube:tab] @Chan: This channel does not have a shorts tab")
+        with self.assertLogs("ytt.sources.ytdlp", "ERROR") as seen:
+            logger.error("ERROR: [youtube:tab] @Nope: HTTP Error 404: Not Found")
+        self.assertEqual([r.getMessage() for r in seen.records], ["ERROR: [youtube:tab] @Nope: HTTP Error 404: Not Found"])
+
+    def test_with_no_logging_set_up_the_other_error_still_reaches_stderr_as_yt_dlps_own_line_did(self):
         FakeYoutubeDL.info = None
         self.backend.channel_tab("https://www.youtube.com/@Chan", "streams")
         logger = FakeYoutubeDL.instances[0].opts["logger"]
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            logger.error("ERROR: [youtube:tab] @Chan: This channel does not have a streams tab")
-            logger.error("\x1b[0;31mERROR:\x1b[0m [youtube:tab] @Chan: This channel does not have a shorts tab")
-            self.assertEqual(err.getvalue(), "")
             logger.error("ERROR: [youtube:tab] @Nope: HTTP Error 404: Not Found")
         self.assertEqual(err.getvalue(), "ERROR: [youtube:tab] @Nope: HTTP Error 404: Not Found\n")
 
@@ -99,7 +107,7 @@ class YtDlpTests(unittest.TestCase):
         self.backend.list_tab("https://www.youtube.com/@Chan", "videos")
         logger = FakeYoutubeDL.instances[0].opts["logger"]
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertNoLogs("ytt.sources.ytdlp", "DEBUG"):
             logger.debug("[debug] x")
             logger.info("[info] y")
             logger.warning("WARNING: z")
