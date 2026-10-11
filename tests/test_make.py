@@ -475,6 +475,15 @@ class RunWithAChannel(MakeWorld):
         self.assertFalse((self.ws.clips_dir / f"{vid(101)}.mp4").exists())
         self.assertEqual((self.clip_status(100), self.clip_status(101)), ("ready", "missing"))
 
+    def test_delete_used_keeps_the_clips_that_were_fetched_but_not_used(self):
+        # the old tool's "--delete-after removes used clips but keeps unused ones": 5 fetched, 4 fill two compilations
+        result, _ = self.make(fetch=dict(clips=5), delete_used=True)
+        self.assertEqual((len(result.made), result.counts["downloaded"], result.counts["deleted"]), (2, 5, 4))
+        self.assertEqual([self.clip_status(n) for n in (39, 38, 37, 36)], ["missing"] * 4)
+        self.assertEqual(self.clip_status(35), "ready")
+        self.assertTrue((self.ws.clips_dir / f"{vid(35)}.mp4").exists())
+        self.assertEqual(self.used(), sorted(vid(n) for n in (39, 38, 37, 36)))
+
     def test_like_repeats_the_request_on_fresh_clips_and_works_through_a_remake(self):
         first, _ = self.make(fetch=dict(clips=2))
         self.assertEqual(self.comp_ids(first.made[0]), [vid(39), vid(38)])
