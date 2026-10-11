@@ -506,9 +506,41 @@ state, and prints a report:
  Warnings   3 · Unresolved records 2
 ```
 
-After that the old files are ignored. The existing 85 tests are the safety net and are ported as the new layers
-appear; none is dropped without an equivalent. The old scripts stay until the new commands reach parity, then are
-removed in one commit.
+After that the old files are ignored. The old scripts are removed (step 8); they stay in git at the tag
+`old-scripts` (`git show old-scripts:auto_compile.py`).
+
+### What happened to the 85 old tests (77 in `test_auto_compile.py`, 8 in `test_stitch_videos.py`)
+
+Each old behaviour now has a test in the new suite, or was replaced on purpose. Where they went:
+
+| old tests | now covered by |
+|---|---|
+| downloading, replacing failed downloads, parallel runs, order, Ctrl-C | `test_fetch.py`, `test_make.py` |
+| clips found on disk adopted; look-alike re-uploads and `--keep-duplicates` | `test_fetch.py`, `test_sources.py` |
+| `--pick` parsing, `comps:N`, sizing a plan, clips already waiting counted | `test_sources.py`, `test_fetch.py` |
+| leftover choices (keep, short, top up), "no nagging" | `test_make.py`, `test_groups.py` |
+| `--again` and the summary | `make --like` (`test_make.py`, `test_cli_make.py`); the summary says how to go again |
+| `--delete-after` keeps unused clips | `test_make.py` |
+| `--redo` (same clips, same order, reversed, replace, missing clips downloaded again, dry run) | `test_remake.py` |
+| what the old tool wrote can be imported | `test_legacy_import.py`, from state frozen by the real old tool (below) |
+| the 8 stitch tests (nothing hidden, own time, hard cut, long transition, NTSC, overlap, random) | `test_engine.py`; five of them were **not** covered by the engine tests and were ported in step 8 |
+| transition-video look (key colour, closeness, softness, despill, own sound, real render under each choice) | `test_engine.py` (`TransitionVideoLookTests`), ported in step 8 |
+| the look questions of the wizard | `ytt style` and the menu's Styles (`test_style*.py`, `test_menu.py`) |
+| stale date range carried into the next run | `test_menu.py`: nothing is carried over (pinned in step 8) |
+
+**Replaced on purpose, with no test of the old behaviour:**
+
+- The old wizard's questions (first-run setup, "question 8", "setup again?") are the menu and `ytt style`.
+- "Offer to look beyond the date range" is gone. The plan says the range narrowed the list, and "no videos match" is an
+  error (`test_fetch.py`).
+- `--redo` used the settings as they are now; `remake` uses the style the compilation was made with (every compilation
+  keeps its own copy) unless `--style` says otherwise.
+
+**State the old tool wrote** is frozen in `tests/fixtures/legacy_state/` (JSON files with machine paths as `{ROOT}`,
+plus a list of the video files; `README.md` there says how they were captured and how to capture them again).
+`tests/legacy_world.py` rebuilds a scratch folder from them with tiny stand-in videos. The import and remake tests start
+from that, so the importer is still checked against the real format and not against a hand-written guess.
+The helpers all test files share are in `tests/support.py`.
 
 ## 20. Build order (bottom-up, small commits, pushed)
 
@@ -530,7 +562,19 @@ removed in one commit.
    `ytt stitch`, `ytt doctor`, `ytt style stingers`, and the menu entries and the research-to-make handoff; see
    sections 6, 7, 9, 14 and 17, "as built"). Consistent output means the same table style, `--json`/`--ids`/`--csv`,
    notes on stderr, plain messages and exit codes in every research tool. Nothing has run against real YouTube.
-8. Docs; delete the old scripts; port or replace their tests.
+8. Docs; delete the old scripts; port or replace their tests. **Done.** README rewritten; the old scripts and their two
+   test files removed (tag `old-scripts` keeps them); shared test helpers in `tests/support.py`; the old tool's real
+   state frozen as fixtures; the gaps found while comparing old and new tests closed first (see section 19). Also
+   fixed on the way: `yt-dlp` was missing from the install dependencies (`pipx install .` would have started without
+   it) and Pillow is the optional `stingers` extra. 848 tests pass, 1 skipped (it needs a non-root user).
+
+Found by the first run on the user's own machine (after step 7) and fixed: a rough date ("1 month ago") was shown in
+`research outliers` as if exact (now `~`, with `approx` in `--json` and `--csv`); `research live` on a channel with
+no streams tab printed yt-dlp's raw error line (that message alone is now dropped, other errors still show, through the
+`logging` module because only `ui` may print); and `clip` kept a video 13 days old under `--max-age-days 7` because it
+only looked up dates that were missing, not rough ones (the old `ClipFinder` had the same flaw; `--resolve-dates` and
+`clip` now look up exact dates for rough ones too). `doctor` also says where it looked for the first missing clip or
+compilation file, and `make` ends by saying how to make another batch (`--like last`) or change the look (`remake`).
 
 Each step ends in something that runs. The guided UI is last because it is the one layer that can be rebuilt freely
 once the operations are right. The old scripts are frozen while this happens: bug fixes only if the new code can
@@ -553,9 +597,15 @@ not yet replace them.
   The research, stitch, doctor and stinger flows of step 7 are tested the same way.
 - Research, `doctor`'s network checks and everything that reads YouTube are checked against a fake YouTube only; what
   real YouTube returns (flat-listing fields, rough dates, subscriber counts, live flags, blocks and rate limits) is
-  unverified until run on the user's machine. `doctor` and `stitch` were also tried only in the sandbox, on tiny
-  synthetic clips. Stingers were rendered at small sizes only; 1080x1920 at the default smoothing is slow (every frame is
-  drawn at twice the size).
+  unverified until run on the user's machine. `doctor`, `research outliers`, `research live` and `style stingers` (five
+  at 540x960, 30 frames) have since been run on the user's machine and behaved, apart from what is listed under step 8;
+  `table`, `tags`, `niche`, `clip`, `channels`, `stitch` on real clips and the menu with real downloads have not.
+  Stingers at the full 1080x1920 default are untried and slow (every frame is drawn at twice the size).
+- Dates from a channel page are rough ("1 week ago" is 7 days, and may be 13). Outlier tables mark them with `~`; only
+  `--resolve-dates` and `clip` look up exact days.
+- On the user's machine `doctor` reported every ready clip and compilation file as missing after the import; whether the
+  files had been moved or the records point to the wrong place was not yet known (doctor now prints the path it looked
+  at). The path handling reads consistently in the tests.
 - The research tools that look at each video (`table --full`, `tags`, `live`, `--resolve-dates`) make one request per
   video and are as slow as that sounds on a big list.
 - `make` was tested with compilations of 2 clips of about a second. Large libraries (the first plan probes every unused
