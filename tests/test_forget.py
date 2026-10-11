@@ -12,10 +12,10 @@ from ytt.workspace import store
 
 try:
     from test_fetch import FetchWorld, vid
-    from test_auto_compile import HAVE_TOOLS
+    from support import HAVE_TOOLS
 except ImportError:
     from tests.test_fetch import FetchWorld, vid
-    from tests.test_auto_compile import HAVE_TOOLS
+    from tests.support import HAVE_TOOLS
 
 
 @unittest.skipUnless(HAVE_TOOLS, "needs ffmpeg")

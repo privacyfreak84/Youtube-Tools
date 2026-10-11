@@ -10,9 +10,9 @@ from ytt.sources.errors import DownloadStopped, SourceError
 from ytt.sources.models import ChannelRef, ChannelTab, LiveInfo, VideoInfo
 
 try:
-    from test_auto_compile import template_clip
+    from support import template_clip
 except ImportError:
-    from tests.test_auto_compile import template_clip
+    from tests.support import template_clip
 
 
 def make_videos(n, newest=datetime(2026, 9, 30, 12, tzinfo=timezone.utc), title="Clip {i}", duration=20, tab="shorts"):

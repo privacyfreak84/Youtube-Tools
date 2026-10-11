@@ -16,10 +16,10 @@ from ytt.sources.models import VideoInfo
 
 try:
     from fakes import FakeBackend, make_videos
-    from test_auto_compile import HAVE_TOOLS
+    from support import HAVE_TOOLS
 except ImportError:
     from tests.fakes import FakeBackend, make_videos
-    from tests.test_auto_compile import HAVE_TOOLS
+    from tests.support import HAVE_TOOLS
 
 
 class ChannelTests(unittest.TestCase):

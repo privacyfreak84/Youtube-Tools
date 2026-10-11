@@ -10,9 +10,9 @@ from ytt.engine import stitch
 from ytt.engine.stitch import EngineError, RenderSpec
 
 try:
-    from test_stitch_videos import HAVE_TOOLS, TAIL, HEAD, BODY, _colour_frames, _durations, _make_clip
+    from support import HAVE_TOOLS, TAIL, HEAD, BODY, _colour_frames, _durations, _make_clip
 except ImportError:
-    from tests.test_stitch_videos import HAVE_TOOLS, TAIL, HEAD, BODY, _colour_frames, _durations, _make_clip
+    from tests.support import HAVE_TOOLS, TAIL, HEAD, BODY, _colour_frames, _durations, _make_clip
 
 
 @unittest.skipUnless(HAVE_TOOLS, "needs ffmpeg")

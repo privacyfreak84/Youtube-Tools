@@ -8,11 +8,11 @@ from ytt.workspace.workspace import Workspace
 
 try:
     from test_cli_fetch import FetchCliTest, vid
-    from test_auto_compile import HAVE_TOOLS
+    from support import HAVE_TOOLS
     from fakes import FakeBackend, make_videos
 except ImportError:
     from tests.test_cli_fetch import FetchCliTest, vid
-    from tests.test_auto_compile import HAVE_TOOLS
+    from tests.support import HAVE_TOOLS
     from tests.fakes import FakeBackend, make_videos
 
 

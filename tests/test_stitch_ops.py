@@ -12,9 +12,9 @@ from ytt.ops.compile import stitch as st
 from ytt.ops.errors import OpError
 
 try:
-    from test_stitch_videos import HAVE_TOOLS, _durations, _make_clip
+    from support import HAVE_TOOLS, _durations, _make_clip
 except ImportError:
-    from tests.test_stitch_videos import HAVE_TOOLS, _durations, _make_clip
+    from tests.support import HAVE_TOOLS, _durations, _make_clip
 
 
 def make_timed_clip(path, seconds):
