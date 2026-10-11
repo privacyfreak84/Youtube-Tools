@@ -22,19 +22,19 @@ from ytt.workspace import store
 from ytt.workspace.workspace import Workspace
 
 try:
-    from test_auto_compile import WorldTest as _World
-    from test_stitch_videos import _durations
+    from legacy_world import LegacyWorld as _World
+    from support import _durations
 except ImportError:
-    from tests.test_auto_compile import WorldTest as _World
-    from tests.test_stitch_videos import _durations
+    from tests.legacy_world import LegacyWorld as _World
+    from tests.support import _durations
 
 
 class RemakeWorld(_World):
-    """Two compilations of 4 one-second clips each, made by the old tool, then imported."""
+    """Two compilations of 4 one-second clips each, as the real old tool made them (frozen in
+    tests/fixtures/legacy_state/), then imported."""
 
     def setUp(self):
         super().setUp()
-        self.run_ac(*self.base("--pick", "comps:2"))
         self.assertEqual(len(self.made()), 2)
         self.ws = Workspace.init(self.tmp / "new_ws")
         self.addCleanup(self.ws.close)

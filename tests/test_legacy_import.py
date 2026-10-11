@@ -1,9 +1,9 @@
 """
 Tests for the one-time import of the old scripts' state (ytt/ops/legacy_import.py).
 
-Part 1 builds old-format state by hand (fast). Part 2 runs the real old scripts against the fake YouTube from
-test_auto_compile.py, then imports what they really wrote: the check that matters most, because it cannot
-drift from the actual file formats.
+Part 1 builds old-format state by hand (fast). Part 2 imports state the real old scripts wrote (frozen in
+tests/fixtures/legacy_state/, captured by running them against a fake YouTube): the check that matters most, because
+it cannot drift from the actual file formats.
 """
 import hashlib
 import json
@@ -18,9 +18,9 @@ from ytt.workspace.errors import WorkspaceError
 from ytt.workspace.workspace import Workspace
 
 try:
-    from test_auto_compile import WorldTest as _World
+    from legacy_world import LegacyWorld as _World
 except ImportError:                                           # run as `python -m unittest tests....`
-    from tests.test_auto_compile import WorldTest as _World
+    from tests.legacy_world import LegacyWorld as _World
 
 STAMP = "20260101-1200"
 
@@ -316,13 +316,13 @@ class ExtractIdTests(unittest.TestCase):
 
 # ---------------------------------------------------------------------- part 2: the real old scripts
 class RealOldStateTests(_World):
-    """Run the real old tool against the fake YouTube, then import the state it actually wrote."""
+    """Import the state the real old tool actually wrote (frozen in tests/fixtures/legacy_state/, made by running it
+    against the fake YouTube): 2 compilations of 4 clips each, every file still on disk."""
 
     def test_state_written_by_the_real_old_scripts_imports_completely_and_correctly(self):
-        out = self.run_ac(*self.base("--pick", "comps:2"))
         old_archive = self.state("fetch_archive.json")
         old_ledger = self.state("compile_ledger.json")
-        self.assertEqual(len(old_ledger["compilations"]), 2, out)
+        self.assertEqual(len(old_ledger["compilations"]), 2)
         self.assertTrue(old_archive)
 
         ws_root = self.tmp / "new_ws"
@@ -345,8 +345,14 @@ class RealOldStateTests(_World):
             self.assertEqual(store.get_style(ws.conn, "default")["transition"], "cut")
             self.assertEqual(store.list_sources(ws.conn), ["@Chan"])
 
+
+
+class RealOldStateAfterDeleteAfterTests(_World):
+    """What the real old tool wrote with --delete-after: 6 clips fetched, 4 used and deleted, 2 kept."""
+
+    SCENARIO = "clips_deleted_after_use"
+
     def test_clips_the_old_tool_deleted_after_use_import_as_missing_but_known(self):
-        self.run_ac(*self.base("--pick", "new:6", "--delete-after"))     # 6 fetched, 4 used and deleted, 2 kept
         old_archive = self.state("fetch_archive.json")
         self.assertEqual((len(old_archive), len(self.clips_on_disk())), (6, 2))
         with Workspace.init(self.tmp / "new_ws") as ws:
